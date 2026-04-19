@@ -8,7 +8,7 @@
  *   - Idempotency: same key → no duplicate write
  *   - Mandatory rejection metadata enforcement
  *   - Restoration-mode flag handling for POST_COMPLAINT_REVIEW flows
- *   - No-op handling for same-state "transitions"
+ *   - Same-state transitions rejected per locked Rule G
  *   - Event payload shape
  */
 
@@ -27,6 +27,7 @@ import {
   MissingFraudCaseError,
   MissingComplaintIdError,
   MissingIdempotencyKeyError,
+  MissingComplaintRestorationMetadataError,
 } from "../state-machines/visit-errors";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,13 +54,28 @@ interface MockEventRow {
   createdAt: Date;
 }
 
+interface MockAssignmentRow {
+  id: string;
+  rejectionReason: string | null;
+  rejectionDetail: string | null;
+}
+
 function makeTx(initialVisits: MockVisitRow[] = []): {
   tx: VisitTxClient;
   visits: Map<string, MockVisitRow>;
+  assignments: Map<string, MockAssignmentRow>;
   events: Map<string, MockEventRow>;
   eventsByIdempotency: Map<string, MockEventRow>;
 } {
   const visits = new Map<string, MockVisitRow>(initialVisits.map((v) => [v.id, v]));
+  const assignments = new Map<string, MockAssignmentRow>();
+  for (const v of initialVisits) {
+    assignments.set(v.assignmentId, {
+      id: v.assignmentId,
+      rejectionReason: null,
+      rejectionDetail: null,
+    });
+  }
   const events = new Map<string, MockEventRow>();
   const eventsByIdempotency = new Map<string, MockEventRow>();
   let eventCounter = 0;
@@ -118,9 +134,21 @@ function makeTx(initialVisits: MockVisitRow[] = []): {
         return row;
       },
     },
+    assignment: {
+      async update({ where, data }) {
+        const a = assignments.get(where.id);
+        if (!a) throw new Error(`No assignment ${where.id}`);
+        const updated: MockAssignmentRow = {
+          ...a,
+          ...(data as Partial<MockAssignmentRow>),
+        };
+        assignments.set(where.id, updated);
+        return updated;
+      },
+    },
   };
 
-  return { tx, visits, events, eventsByIdempotency };
+  return { tx, visits, assignments, events, eventsByIdempotency };
 }
 
 function seedVisit(state: VisitState): MockVisitRow {
@@ -219,16 +247,19 @@ const happyPathCases: Array<{
     id: "T-23",
     from: VisitState.POST_COMPLAINT_REVIEW,
     to: VisitState.COMPLETED_VERIFIED,
+    extraPayload: { originalCompletionState: VisitState.COMPLETED_VERIFIED },
   },
   {
     id: "T-24",
     from: VisitState.POST_COMPLAINT_REVIEW,
     to: VisitState.COMPLETED_PARTIAL_APPROVED,
+    extraPayload: { originalCompletionState: VisitState.COMPLETED_PARTIAL_APPROVED },
   },
   {
     id: "T-25",
     from: VisitState.POST_COMPLAINT_REVIEW,
     to: VisitState.COMPLETED_FLAGGED_WAIVED,
+    extraPayload: { originalCompletionState: VisitState.COMPLETED_FLAGGED_WAIVED },
   },
   {
     id: "T-26",
@@ -356,10 +387,12 @@ test("rule F: POST_COMPLAINT_REVIEW cannot exit to arbitrary state (SCHEDULED)",
   );
 });
 
-test("rule G: self-transition is a no-op, not an error", async () => {
+test("rule G: self-transition throws InvalidTransitionError", async () => {
   const { tx, events } = makeTx([seedVisit(VisitState.NOTIFIED)]);
-  const result = await transitionVisit(tx, baseInput(VisitState.NOTIFIED));
-  assert.equal(result.status, "no-op");
+  await assert.rejects(
+    () => transitionVisit(tx, baseInput(VisitState.NOTIFIED)),
+    VisitInvalidTransitionError,
+  );
   assert.equal(events.size, 0, "no event written for self-transition");
 });
 
@@ -475,7 +508,7 @@ test("REJECTED+FRAUD: missing fraudCaseId throws MissingFraudCaseError", async (
 });
 
 test("REJECTED+FRAUD with fraudCaseId succeeds", async () => {
-  const { tx } = makeTx([seedVisit(VisitState.FLAGGED)]);
+  const { tx, assignments } = makeTx([seedVisit(VisitState.FLAGGED)]);
   const result = await transitionVisit(
     tx,
     baseInput(VisitState.REJECTED, {
@@ -487,6 +520,9 @@ test("REJECTED+FRAUD with fraudCaseId succeeds", async () => {
     }),
   );
   assert.equal(result.status, "transitioned");
+  const assignment = assignments.get("assignment-1");
+  assert.equal(assignment?.rejectionReason, RejectionReason.FRAUD);
+  assert.equal(assignment?.rejectionDetail, "pHash match");
 });
 
 test("REJECTED+CLIENT_COMPLAINT_UPHELD: missing complaintId throws", async () => {
@@ -527,7 +563,10 @@ test("T-23 restoration sets postComplaintOutcome=DISMISSED and isRestoration=tru
   const { tx, visits, eventsByIdempotency } = makeTx([v]);
   const result = await transitionVisit(
     tx,
-    baseInput(VisitState.COMPLETED_VERIFIED, { idempotencyKey: "restore-1" }),
+    baseInput(VisitState.COMPLETED_VERIFIED, {
+      idempotencyKey: "restore-1",
+      payload: { originalCompletionState: VisitState.COMPLETED_VERIFIED },
+    }),
   );
   assert.equal(result.isRestoration, true);
   assert.equal(visits.get("visit-1")!.postComplaintOutcome, "DISMISSED");
@@ -541,7 +580,12 @@ test("T-24 restoration to COMPLETED_PARTIAL_APPROVED marks DISMISSED", async () 
   const v = seedVisit(VisitState.POST_COMPLAINT_REVIEW);
   v.postComplaintReviewed = true;
   const { tx, visits } = makeTx([v]);
-  await transitionVisit(tx, baseInput(VisitState.COMPLETED_PARTIAL_APPROVED));
+  await transitionVisit(
+    tx,
+    baseInput(VisitState.COMPLETED_PARTIAL_APPROVED, {
+      payload: { originalCompletionState: VisitState.COMPLETED_PARTIAL_APPROVED },
+    }),
+  );
   assert.equal(visits.get("visit-1")!.postComplaintOutcome, "DISMISSED");
 });
 
@@ -549,8 +593,29 @@ test("T-25 restoration to COMPLETED_FLAGGED_WAIVED marks DISMISSED", async () =>
   const v = seedVisit(VisitState.POST_COMPLAINT_REVIEW);
   v.postComplaintReviewed = true;
   const { tx, visits } = makeTx([v]);
-  await transitionVisit(tx, baseInput(VisitState.COMPLETED_FLAGGED_WAIVED));
+  await transitionVisit(
+    tx,
+    baseInput(VisitState.COMPLETED_FLAGGED_WAIVED, {
+      payload: { originalCompletionState: VisitState.COMPLETED_FLAGGED_WAIVED },
+    }),
+  );
   assert.equal(visits.get("visit-1")!.postComplaintOutcome, "DISMISSED");
+});
+
+test("restoration to a different completion state is rejected", async () => {
+  const v = seedVisit(VisitState.POST_COMPLAINT_REVIEW);
+  v.postComplaintReviewed = true;
+  const { tx } = makeTx([v]);
+  await assert.rejects(
+    () =>
+      transitionVisit(
+        tx,
+        baseInput(VisitState.COMPLETED_FLAGGED_WAIVED, {
+          payload: { originalCompletionState: VisitState.COMPLETED_VERIFIED },
+        }),
+      ),
+    MissingComplaintRestorationMetadataError,
+  );
 });
 
 test("T-26 upheld → REJECTED marks postComplaintOutcome=UPHELD", async () => {

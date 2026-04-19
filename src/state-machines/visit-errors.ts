@@ -61,3 +61,13 @@ export class MissingIdempotencyKeyError extends Error {
     this.name = "MissingIdempotencyKeyError";
   }
 }
+
+export class MissingComplaintRestorationMetadataError extends Error {
+  readonly code = "MISSING_COMPLAINT_RESTORATION_METADATA";
+  constructor() {
+    super(
+      "Complaint-dismissal restoration requires payload.originalCompletionState (or priorCompletionState) matching the target completed state",
+    );
+    this.name = "MissingComplaintRestorationMetadataError";
+  }
+}

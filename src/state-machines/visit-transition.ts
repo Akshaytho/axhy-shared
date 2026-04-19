@@ -27,6 +27,7 @@ import {
   MissingFraudCaseError,
   MissingComplaintIdError,
   MissingIdempotencyKeyError,
+  MissingComplaintRestorationMetadataError,
 } from "./visit-errors";
 import { isUniqueConstraintError } from "./concurrency";
 
@@ -64,9 +65,17 @@ export interface AssignmentEventDelegate {
   }): Promise<EventRow>;
 }
 
+export interface VisitAssignmentDelegate {
+  update(args: {
+    where: { id: string };
+    data: Record<string, unknown>;
+  }): Promise<unknown>;
+}
+
 export interface VisitTxClient {
   siteVisit: SiteVisitDelegate;
   assignmentEvent: AssignmentEventDelegate;
+  assignment: VisitAssignmentDelegate;
 }
 
 interface VisitRow {
@@ -219,19 +228,11 @@ export async function transitionVisit(
 
   const from = visit.lifecycleStatus as VisitState;
 
-  // 3. No-op short-circuit — same state is not an error, just a replay we
-  //    accept silently. Caller is expected to generate different
-  //    idempotencyKeys for semantically distinct actions, so same-state
-  //    transitions at different times shouldn't normally happen; when they
-  //    do, we skip without writing another event.
+  // 3. Rule G: self-transitions are invalid. Exact idempotent replays return
+  //    above from the idempotency-key lookup; a new logical action trying to
+  //    transition to the same state must be rejected.
   if (from === input.to) {
-    return {
-      status: "no-op",
-      fromState: from,
-      toState: input.to,
-      eventId: "",
-      isRestoration: false,
-    };
+    throw new VisitInvalidTransitionError(from, input.to, VISIT_TRANSITIONS[from] ?? []);
   }
 
   // 4. Validate transition against the locked map
@@ -271,6 +272,14 @@ export async function transitionVisit(
   const enteringReview = input.to === VisitState.POST_COMPLAINT_REVIEW;
   const upheldAfterReview =
     from === VisitState.POST_COMPLAINT_REVIEW && input.to === VisitState.REJECTED;
+
+  if (isRestoration) {
+    const originalCompletionState =
+      payload.originalCompletionState ?? payload.priorCompletionState;
+    if (originalCompletionState !== input.to) {
+      throw new MissingComplaintRestorationMetadataError();
+    }
+  }
 
   // 7. Write state — all relevant flags set in one update
   const updateData: Record<string, unknown> = {
@@ -324,7 +333,20 @@ export async function transitionVisit(
     );
   }
 
-  // 8. Write event — idempotencyKey unique partial index prevents duplicates.
+  // 8. Rejection metadata is stored redundantly on Assignment as well as the
+  //    AssignmentEvent payload so analytics/payroll can query it without
+  //    replaying the event stream.
+  if (input.to === VisitState.REJECTED) {
+    await tx.assignment.update({
+      where: { id: visit.assignmentId },
+      data: {
+        rejectionReason: payload.rejectionReason,
+        rejectionDetail: payload.rejectionDetail,
+      },
+    });
+  }
+
+  // 9. Write event — idempotencyKey unique partial index prevents duplicates.
   //    Catch P2002 (unique violation) from a concurrent insert racing our
   //    own with the same key and translate to a `duplicate` result —
   //    Postgres already confirmed exactly one of us commits, we just need
@@ -336,11 +358,14 @@ export async function transitionVisit(
         assignmentId: visit.assignmentId,
         eventType: buildEventType(input.to),
         payload: {
+          ...payload,
           from,
           to: input.to,
           reason: input.reason,
           restorationMode: isRestoration,
-          ...payload,
+          ...(enteringReview && !payload.priorCompletionState
+            ? { priorCompletionState: from }
+            : {}),
         },
         actorType: input.actor.type,
         actorId: input.actor.id,
