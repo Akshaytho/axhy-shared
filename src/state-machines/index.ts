@@ -3,6 +3,8 @@
  */
 
 export * from "./visit";
+export * from "./visit-errors";
+export * from "./visit-transition";
 export * from "./assignment-config";
 export * from "./worker";
 export * from "./device";
