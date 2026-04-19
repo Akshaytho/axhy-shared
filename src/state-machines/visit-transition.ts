@@ -139,16 +139,19 @@ export interface TransitionVisitResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The AssignmentEvent.eventType string used for every lifecycle transition.
- * Prefixed with the target state so analytics queries can group by transition.
- *   e.g. STATE_TRANSITION_CHECKED_IN, STATE_TRANSITION_COMPLETED_VERIFIED.
+ * Every transitionVisit() emits AssignmentEvent.eventType='STATE_TRANSITION'
+ * (the enum value added in migration 005_state_transition_event). The
+ * specific state info lives in the payload:
+ *   { from, to, reason, restorationMode, ...userPayload }
  *
- * NOTE: if the DB's AsnEventType Prisma enum is strict and doesn't include
- * these values, callers should pass a different enum value via a future
- * `eventTypeOverride` field — or we widen AsnEventType in a migration.
+ * This is intentionally one value, not STATE_TRANSITION_<state>. Postgres
+ * enums can't accept arbitrary suffixes, and analytics groups by
+ * payload.to which is equally efficient via a GIN index if needed.
  */
-export function buildEventType(to: VisitState): string {
-  return `STATE_TRANSITION_${to}`;
+export const STATE_TRANSITION_EVENT_TYPE = 'STATE_TRANSITION' as const;
+
+export function buildEventType(_to: VisitState): string {
+  return STATE_TRANSITION_EVENT_TYPE;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

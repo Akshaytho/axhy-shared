@@ -165,6 +165,10 @@ enum AsnEventType {
   SUPERVISOR_OVERRIDE
   COMPLETED
   CANCELLED
+  // Every transitionVisit() from @axhy/shared emits this event type.
+  // Payload carries { from, to, reason, restorationMode, ... } so the
+  // specific state info isn't lost even though the enum value is generic.
+  STATE_TRANSITION
 }
 
 enum SwapReason {

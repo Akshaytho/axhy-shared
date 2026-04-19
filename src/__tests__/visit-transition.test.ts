@@ -571,7 +571,9 @@ test("event payload carries from, to, reason, restorationMode, and extras", asyn
   });
   const event = eventsByIdempotency.get("key-1")!;
   assert.ok(event);
-  assert.equal(event.eventType, "STATE_TRANSITION_CHECKED_IN");
+  // eventType is always the single 'STATE_TRANSITION' enum value; payload
+  // carries the specific state info (from, to) for analytics.
+  assert.equal(event.eventType, "STATE_TRANSITION");
   assert.equal(event.actorType, "WORKER");
   assert.equal(event.actorId, "user-abc");
   const p = event.payload as Record<string, unknown>;
@@ -583,12 +585,9 @@ test("event payload carries from, to, reason, restorationMode, and extras", asyn
   assert.equal(p.deviceId, "dev-1");
 });
 
-test("eventType prefix is STATE_TRANSITION_<to>", () => {
-  assert.equal(buildEventType(VisitState.CHECKED_IN), "STATE_TRANSITION_CHECKED_IN");
-  assert.equal(
-    buildEventType(VisitState.COMPLETED_VERIFIED),
-    "STATE_TRANSITION_COMPLETED_VERIFIED",
-  );
+test("buildEventType always returns 'STATE_TRANSITION' (matches AsnEventType enum)", () => {
+  assert.equal(buildEventType(VisitState.CHECKED_IN), "STATE_TRANSITION");
+  assert.equal(buildEventType(VisitState.COMPLETED_VERIFIED), "STATE_TRANSITION");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
