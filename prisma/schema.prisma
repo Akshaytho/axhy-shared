@@ -373,6 +373,7 @@ model SiteVisit {
   photos               Photo[]
   gpsTrail             GpsTrailPoint[]
   statusLogs           StatusLog[]
+  softSignals          SoftSignal[]
   verificationSnapshot VerificationSnapshot?
 
   @@index([workerId])
@@ -557,6 +558,29 @@ model AssignmentEvent {
   @@index([assignmentId])
   @@index([eventType])
   @@index([createdAt])
+}
+
+// Soft-signal telemetry for unreliable signals that do NOT drive state
+// transitions (per LOCKED v1.1 design rule 1). Examples: notification
+// open/foreground acks, foreground location pings. Written best-effort;
+// failures are warnings, not errors. Dedupes on (visitId, kind,
+// clientTimestamp) so retries collapse.
+model SoftSignal {
+  id              String    @id @default(uuid())
+  visitId         String
+  visit           SiteVisit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  // Kind: 'NOTIFICATION_ACK' | 'LOCATION_PING' | 'APP_FOREGROUND' | ...
+  kind            String
+  clientTimestamp DateTime
+  receivedAt      DateTime  @default(now())
+  deviceId        String?
+  actorId         String?
+  actorType       String?
+  payload         Json?
+
+  @@unique([visitId, kind, clientTimestamp])
+  @@index([visitId])
+  @@index([kind, receivedAt(sort: Desc)])
 }
 
 model AgentRun {
