@@ -75,7 +75,13 @@ interface EventRow {
   idempotencyKey: string | null;
   assignmentId: string;
   eventType: string;
-  payload: Record<string, unknown> | null;
+  /**
+   * JSON payload as returned by Prisma. Prisma's JsonValue admits primitives,
+   * arrays, and nested objects — we widen to `unknown` so real prisma clients
+   * satisfy the interface, then narrow back to `Record<string, unknown>` via
+   * a safe cast when we read our own writes (we only ever write objects).
+   */
+  payload: unknown;
   actorType: string;
   actorId: string | null;
   createdAt: Date | string;
