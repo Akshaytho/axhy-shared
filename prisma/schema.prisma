@@ -245,6 +245,37 @@ enum DeviceState {
   WORKER_DEPARTED
 }
 
+// ─── Sprint 9: AssignmentConfig + Site lifecycle state machines ──────────────
+
+enum AssignmentConfigState {
+  DRAFT
+  ACTIVE
+  PAUSED
+  WORKER_ON_LEAVE
+  WORKER_DEPARTED
+  SITE_PAUSED
+  REASSIGNMENT_NEEDED
+  INACTIVE
+  DISCARDED
+}
+
+enum SiteState {
+  PROSPECT
+  ONBOARDING
+  PROBATION
+  STABLE
+  EARLY_RISK
+  AT_RISK
+  RENEWAL_WINDOW
+  CONTRACT_EXPANDED
+  PAUSED
+  CHURNING
+  CANCELLED_EARLY
+  CANCELLED_PROBATION
+  TERMINATED
+  LOST_SITE
+}
+
 // ─── Core models ─────────────────────────────────────────────────────────────
 
 model Company {
@@ -348,12 +379,19 @@ model Site {
   // legacy constant in sites.service.ts; set lower for sensitive sites.
   geofenceRadiusM     Int @default(500)
 
+  // Sprint 9: Site / contract lifecycle state machine. Nullable during
+  // backfill — isActive stays as a denormalized convenience flag while the
+  // authoritative active-or-not signal migrates to SITE_ACTIVE_STATES check.
+  lifecycleState SiteState?
+
   assignments      Assignment[]
   siteVisits       SiteVisit[]
   swapRequestsFrom SwapRequest[] @relation("FromSite")
   swapRequestsPref SwapRequest[] @relation("PreferredSite")
+  lifecycleEvents  SiteLifecycleEvent[]
 
   @@index([companyId])
+  @@index([lifecycleState])
 }
 
 model Assignment {
@@ -386,8 +424,15 @@ model Assignment {
   rejectionReason RejectionReason?
   rejectionDetail String?
 
-  siteVisits SiteVisit[]
-  events     AssignmentEvent[]
+  // Sprint 9: AssignmentConfig lifecycle state machine. Tracks the recurring
+  // slot's lifecycle (separate from the per-visit lifecycleStatus on
+  // SiteVisit). Nullable during backfill; isActive + status are retained as
+  // legacy denormalized signals until Sprint 10 retirement.
+  lifecycleState AssignmentConfigState?
+
+  siteVisits      SiteVisit[]
+  events          AssignmentEvent[]
+  lifecycleEvents AssignmentConfigEvent[]
 
   @@index([workerId])
   @@index([siteId])
@@ -395,6 +440,7 @@ model Assignment {
   @@index([workerId, siteId])
   @@index([date])
   @@index([companyId, date])
+  @@index([lifecycleState])
 }
 
 model SiteVisit {
@@ -691,6 +737,37 @@ model DeviceLifecycleEvent {
   createdAt      DateTime @default(now())
 
   @@index([userId])
+  @@index([createdAt])
+}
+
+// Sprint 9 event tables. Same shape as earlier machine events.
+model AssignmentConfigEvent {
+  id             String     @id @default(uuid())
+  assignmentId   String
+  assignment     Assignment @relation(fields: [assignmentId], references: [id])
+  eventType      String
+  payload        Json?
+  actorType      String
+  actorId        String?
+  idempotencyKey String?    @unique
+  createdAt      DateTime   @default(now())
+
+  @@index([assignmentId])
+  @@index([createdAt])
+}
+
+model SiteLifecycleEvent {
+  id             String   @id @default(uuid())
+  siteId         String
+  site           Site     @relation(fields: [siteId], references: [id])
+  eventType      String
+  payload        Json?
+  actorType      String
+  actorId        String?
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  @@index([siteId])
   @@index([createdAt])
 }
 
