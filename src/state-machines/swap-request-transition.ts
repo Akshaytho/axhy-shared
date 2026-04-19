@@ -24,6 +24,7 @@ import {
   MissingSwapAdminDecisionError,
 } from "./lifecycle-errors";
 import { MissingIdempotencyKeyError } from "./visit-errors";
+import { isUniqueConstraintError } from "./concurrency";
 
 // ─── Actor ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,10 @@ export interface SwapRequestDelegate {
     where: { id: string };
     data: Record<string, unknown>;
   }): Promise<SwapRow>;
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 }
 
 export interface SwapRequestEventDelegate {
@@ -197,32 +202,78 @@ export async function transitionSwapRequest(
     }
   }
 
-  // 6. Atomic update
-  await tx.swapRequest.update({
-    where: { id: input.swapRequestId },
+  // 6. Concurrency-safe update (Sprint 10 hardening)
+  const updateResult = await tx.swapRequest.updateMany({
+    where: {
+      id: input.swapRequestId,
+      // For legacy null rows that default to DRAFT, the WHERE needs to
+      // match null explicitly — Prisma treats `undefined` as "skip" but
+      // `null` as "equal to null". If the DB row still has null, only
+      // null-matching queries find it.
+      lifecycleState: row.lifecycleState === null ? null : (from as unknown as string),
+    },
     data: { lifecycleState: input.to },
   });
 
-  const event = await tx.swapRequestEvent.create({
-    data: {
-      idempotencyKey: input.idempotencyKey,
-      swapRequestId: input.swapRequestId,
-      eventType: SWAP_STATE_TRANSITION_EVENT_TYPE,
-      payload: {
-        from,
-        to: input.to,
-        reason: input.reason,
-        ...payload,
-      },
-      actorType: input.actor.type,
-      actorId: input.actor.id,
-    },
-  });
+  if (updateResult.count === 0) {
+    const current = await tx.swapRequest.findUnique({
+      where: { id: input.swapRequestId },
+      select: { id: true, lifecycleState: true },
+    });
+    const newFrom = (current?.lifecycleState ?? SwapRequestState.DRAFT) as SwapRequestState;
+    if (newFrom === input.to) {
+      return {
+        status: "no-op",
+        fromState: newFrom,
+        toState: input.to,
+        eventId: "",
+      };
+    }
+    throw new SwapRequestInvalidTransitionError(
+      newFrom,
+      input.to,
+      SWAP_REQUEST_TRANSITIONS[newFrom] ?? [],
+    );
+  }
 
-  return {
-    status: "transitioned",
-    fromState: from,
-    toState: input.to,
-    eventId: event.id,
-  };
+  try {
+    const event = await tx.swapRequestEvent.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        swapRequestId: input.swapRequestId,
+        eventType: SWAP_STATE_TRANSITION_EVENT_TYPE,
+        payload: {
+          from,
+          to: input.to,
+          reason: input.reason,
+          ...payload,
+        },
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+      },
+    });
+
+    return {
+      status: "transitioned",
+      fromState: from,
+      toState: input.to,
+      eventId: event.id,
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const existing = await tx.swapRequestEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (existing) {
+        const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+        return {
+          status: "duplicate",
+          fromState: existingPayload.from as SwapRequestState,
+          toState: existingPayload.to as SwapRequestState,
+          eventId: existing.id,
+        };
+      }
+    }
+    throw err;
+  }
 }

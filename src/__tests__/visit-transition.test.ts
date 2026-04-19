@@ -79,6 +79,21 @@ function makeTx(initialVisits: MockVisitRow[] = []): {
         visits.set(where.id, updated);
         return updated;
       },
+      async updateMany({ where, data }) {
+        const id = where.id as string;
+        const fromGuard = where.lifecycleStatus as string | undefined;
+        const v = visits.get(id);
+        if (!v) return { count: 0 };
+        if (fromGuard !== undefined && v.lifecycleStatus !== fromGuard) {
+          return { count: 0 };
+        }
+        const updated: MockVisitRow = {
+          ...v,
+          ...(data as Partial<MockVisitRow>),
+        };
+        visits.set(id, updated);
+        return { count: 1 };
+      },
     },
     assignmentEvent: {
       async findUnique({ where }) {

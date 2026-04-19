@@ -28,6 +28,7 @@ import {
   MissingComplaintIdError,
   MissingIdempotencyKeyError,
 } from "./visit-errors";
+import { isUniqueConstraintError } from "./concurrency";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal Prisma-compatible tx client interface
@@ -47,6 +48,11 @@ export interface SiteVisitDelegate {
     where: { id: string };
     data: Record<string, unknown>;
   }): Promise<VisitRow>;
+  // Sprint 10 hardening: from-state-guarded update for concurrent safety.
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 }
 
 export interface AssignmentEventDelegate {
@@ -280,34 +286,90 @@ export async function transitionVisit(
     updateData.postComplaintOutcome = "UPHELD";
   }
 
-  await tx.siteVisit.update({
-    where: { id: input.visitId },
+  // Sprint 10 hardening: optimistic concurrency via from-state guard.
+  // At READ COMMITTED, N parallel tx could all read the same `from` state
+  // and all pass the validity check. Without this guard they'd all UPDATE
+  // successfully and all write distinct events for what should have been
+  // ONE transition. updateMany with lifecycleStatus=from in WHERE means
+  // only the first-committer's row-version matches; the rest see count=0
+  // and re-evaluate against the committed new state.
+  const updateResult = await tx.siteVisit.updateMany({
+    where: { id: input.visitId, lifecycleStatus: from as unknown as string },
     data: updateData,
   });
 
-  // 8. Write event — idempotencyKey unique index prevents duplicates
-  const event = await tx.assignmentEvent.create({
-    data: {
-      idempotencyKey: input.idempotencyKey,
-      assignmentId: visit.assignmentId,
-      eventType: buildEventType(input.to),
-      payload: {
-        from,
-        to: input.to,
-        reason: input.reason,
-        restorationMode: isRestoration,
-        ...payload,
-      },
-      actorType: input.actor.type,
-      actorId: input.actor.id,
-    },
-  });
+  if (updateResult.count === 0) {
+    // Lost the race. Re-read current state and decide what to return.
+    const current = await tx.siteVisit.findUnique({
+      where: { id: input.visitId },
+      select: { lifecycleStatus: true },
+    });
+    const newFrom = (current?.lifecycleStatus ?? from) as VisitState;
+    if (newFrom === input.to) {
+      // Someone else already committed this exact transition. No-op.
+      return {
+        status: "no-op",
+        fromState: newFrom,
+        toState: input.to,
+        eventId: "",
+        isRestoration: false,
+      };
+    }
+    // State moved somewhere else — our transition is no longer valid
+    // from the new state. Throw the same error callers already handle.
+    throw new VisitInvalidTransitionError(
+      newFrom,
+      input.to,
+      VISIT_TRANSITIONS[newFrom] ?? [],
+    );
+  }
 
-  return {
-    status: "transitioned",
-    fromState: from,
-    toState: input.to,
-    eventId: event.id,
-    isRestoration,
-  };
+  // 8. Write event — idempotencyKey unique partial index prevents duplicates.
+  //    Catch P2002 (unique violation) from a concurrent insert racing our
+  //    own with the same key and translate to a `duplicate` result —
+  //    Postgres already confirmed exactly one of us commits, we just need
+  //    to surface the right answer to the loser.
+  try {
+    const event = await tx.assignmentEvent.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        assignmentId: visit.assignmentId,
+        eventType: buildEventType(input.to),
+        payload: {
+          from,
+          to: input.to,
+          reason: input.reason,
+          restorationMode: isRestoration,
+          ...payload,
+        },
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+      },
+    });
+
+    return {
+      status: "transitioned",
+      fromState: from,
+      toState: input.to,
+      eventId: event.id,
+      isRestoration,
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const existing = await tx.assignmentEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (existing) {
+        const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+        return {
+          status: "duplicate",
+          fromState: existingPayload.from as VisitState,
+          toState: existingPayload.to as VisitState,
+          eventId: existing.id,
+          isRestoration: existingPayload.restorationMode === true,
+        };
+      }
+    }
+    throw err;
+  }
 }

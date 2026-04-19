@@ -20,6 +20,7 @@ import {
   MissingSiteLifecycleMetadataError,
 } from "./lifecycle-errors-v9";
 import { MissingIdempotencyKeyError } from "./visit-errors";
+import { isUniqueConstraintError } from "./concurrency";
 
 // ─── Actor ──────────────────────────────────────────────────────────────────
 
@@ -62,6 +63,10 @@ export interface SiteDelegate {
     where: { id: string };
     data: Record<string, unknown>;
   }): Promise<SiteRow>;
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 }
 
 export interface SiteLifecycleEventDelegate {
@@ -145,33 +150,71 @@ export async function transitionSite(
   const payload = input.payload ?? {};
   validateSiteLifecycleMetadata(input.to, payload);
 
-  await tx.site.update({
-    where: { id: input.siteId },
+  // Sprint 10 hardening: concurrency-safe update
+  const updateResult = await tx.site.updateMany({
+    where: {
+      id: input.siteId,
+      lifecycleState: row.lifecycleState === null ? null : (from as unknown as string),
+    },
     data: { lifecycleState: input.to },
   });
 
-  const event = await tx.siteLifecycleEvent.create({
-    data: {
-      idempotencyKey: input.idempotencyKey,
-      siteId: input.siteId,
-      eventType: SITE_STATE_TRANSITION_EVENT_TYPE,
-      payload: {
-        from,
-        to: input.to,
-        reason: input.reason,
-        ...payload,
-      },
-      actorType: input.actor.type,
-      actorId: input.actor.id,
-    },
-  });
+  if (updateResult.count === 0) {
+    const current = await tx.site.findUnique({
+      where: { id: input.siteId },
+      select: { id: true, lifecycleState: true },
+    });
+    const newFrom = (current?.lifecycleState ?? SiteState.PROSPECT) as SiteState;
+    if (newFrom === input.to) {
+      return { status: "no-op", fromState: newFrom, toState: input.to, eventId: "" };
+    }
+    throw new SiteInvalidTransitionError(
+      newFrom,
+      input.to,
+      SITE_TRANSITIONS[newFrom] ?? [],
+    );
+  }
 
-  return {
-    status: "transitioned",
-    fromState: from,
-    toState: input.to,
-    eventId: event.id,
-  };
+  try {
+    const event = await tx.siteLifecycleEvent.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        siteId: input.siteId,
+        eventType: SITE_STATE_TRANSITION_EVENT_TYPE,
+        payload: {
+          from,
+          to: input.to,
+          reason: input.reason,
+          ...payload,
+        },
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+      },
+    });
+
+    return {
+      status: "transitioned",
+      fromState: from,
+      toState: input.to,
+      eventId: event.id,
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const existing = await tx.siteLifecycleEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (existing) {
+        const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+        return {
+          status: "duplicate",
+          fromState: existingPayload.from as SiteState,
+          toState: existingPayload.to as SiteState,
+          eventId: existing.id,
+        };
+      }
+    }
+    throw err;
+  }
 }
 
 function validateSiteLifecycleMetadata(

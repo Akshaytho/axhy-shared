@@ -13,6 +13,7 @@ import {
   DeviceOwnerNotFoundError,
 } from "./lifecycle-errors";
 import { MissingIdempotencyKeyError } from "./visit-errors";
+import { isUniqueConstraintError } from "./concurrency";
 
 // ─── Actor ──────────────────────────────────────────────────────────────────
 
@@ -55,6 +56,10 @@ export interface DeviceUserDelegate {
     where: { id: string };
     data: Record<string, unknown>;
   }): Promise<UserDeviceRow>;
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 }
 
 export interface DeviceLifecycleEventDelegate {
@@ -133,31 +138,69 @@ export async function transitionDevice(
     throw new DeviceInvalidTransitionError(from, input.to, allowed);
   }
 
-  await tx.user.update({
-    where: { id: input.userId },
+  // Sprint 10 hardening: concurrency-safe update
+  const updateResult = await tx.user.updateMany({
+    where: {
+      id: input.userId,
+      deviceState: row.deviceState === null ? null : (from as unknown as string),
+    },
     data: { deviceState: input.to },
   });
 
-  const event = await tx.deviceLifecycleEvent.create({
-    data: {
-      idempotencyKey: input.idempotencyKey,
-      userId: input.userId,
-      eventType: DEVICE_STATE_TRANSITION_EVENT_TYPE,
-      payload: {
-        from,
-        to: input.to,
-        reason: input.reason,
-        ...(input.payload ?? {}),
-      },
-      actorType: input.actor.type,
-      actorId: input.actor.id,
-    },
-  });
+  if (updateResult.count === 0) {
+    const current = await tx.user.findUnique({
+      where: { id: input.userId },
+      select: { id: true, deviceState: true },
+    });
+    const newFrom = (current?.deviceState ?? DeviceState.REGISTERED) as DeviceState;
+    if (newFrom === input.to) {
+      return { status: "no-op", fromState: newFrom, toState: input.to, eventId: "" };
+    }
+    throw new DeviceInvalidTransitionError(
+      newFrom,
+      input.to,
+      DEVICE_TRANSITIONS[newFrom] ?? [],
+    );
+  }
 
-  return {
-    status: "transitioned",
-    fromState: from,
-    toState: input.to,
-    eventId: event.id,
-  };
+  try {
+    const event = await tx.deviceLifecycleEvent.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        userId: input.userId,
+        eventType: DEVICE_STATE_TRANSITION_EVENT_TYPE,
+        payload: {
+          from,
+          to: input.to,
+          reason: input.reason,
+          ...(input.payload ?? {}),
+        },
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+      },
+    });
+
+    return {
+      status: "transitioned",
+      fromState: from,
+      toState: input.to,
+      eventId: event.id,
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const existing = await tx.deviceLifecycleEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (existing) {
+        const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+        return {
+          status: "duplicate",
+          fromState: existingPayload.from as DeviceState,
+          toState: existingPayload.to as DeviceState,
+          eventId: existing.id,
+        };
+      }
+    }
+    throw err;
+  }
 }

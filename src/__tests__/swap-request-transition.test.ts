@@ -72,6 +72,18 @@ function makeTx(initialRows: MockSwapRow[] = []): {
         rows.set(where.id, updated);
         return updated;
       },
+      async updateMany({ where, data }) {
+        const id = where.id as string;
+        const fromGuard = where.lifecycleState as string | null | undefined;
+        const r = rows.get(id);
+        if (!r) return { count: 0 };
+        if (fromGuard !== undefined && r.lifecycleState !== fromGuard) {
+          return { count: 0 };
+        }
+        const updated = { ...r, ...(data as Partial<MockSwapRow>) };
+        rows.set(id, updated);
+        return { count: 1 };
+      },
     },
     swapRequestEvent: {
       async findUnique({ where }) {

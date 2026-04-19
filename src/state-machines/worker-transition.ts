@@ -21,6 +21,7 @@ import {
   MissingWorkerDecisionMetadataError,
 } from "./lifecycle-errors";
 import { MissingIdempotencyKeyError } from "./visit-errors";
+import { isUniqueConstraintError } from "./concurrency";
 
 // ─── Actor ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,10 @@ export interface WorkerUserDelegate {
     where: { id: string };
     data: Record<string, unknown>;
   }): Promise<UserRow>;
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 }
 
 export interface WorkerLifecycleEventDelegate {
@@ -197,31 +202,69 @@ export async function transitionWorker(
     }
   }
 
-  await tx.user.update({
-    where: { id: input.userId },
+  // Sprint 10 hardening: concurrency-safe update (from-state guard)
+  const updateResult = await tx.user.updateMany({
+    where: {
+      id: input.userId,
+      lifecycleState: row.lifecycleState === null ? null : (from as unknown as string),
+    },
     data: { lifecycleState: input.to },
   });
 
-  const event = await tx.workerLifecycleEvent.create({
-    data: {
-      idempotencyKey: input.idempotencyKey,
-      userId: input.userId,
-      eventType: WORKER_STATE_TRANSITION_EVENT_TYPE,
-      payload: {
-        from,
-        to: input.to,
-        reason: input.reason,
-        ...payload,
-      },
-      actorType: input.actor.type,
-      actorId: input.actor.id,
-    },
-  });
+  if (updateResult.count === 0) {
+    const current = await tx.user.findUnique({
+      where: { id: input.userId },
+      select: { id: true, lifecycleState: true },
+    });
+    const newFrom = (current?.lifecycleState ?? WorkerState.APPLICANT) as WorkerState;
+    if (newFrom === input.to) {
+      return { status: "no-op", fromState: newFrom, toState: input.to, eventId: "" };
+    }
+    throw new WorkerInvalidTransitionError(
+      newFrom,
+      input.to,
+      WORKER_TRANSITIONS[newFrom] ?? [],
+    );
+  }
 
-  return {
-    status: "transitioned",
-    fromState: from,
-    toState: input.to,
-    eventId: event.id,
-  };
+  try {
+    const event = await tx.workerLifecycleEvent.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        userId: input.userId,
+        eventType: WORKER_STATE_TRANSITION_EVENT_TYPE,
+        payload: {
+          from,
+          to: input.to,
+          reason: input.reason,
+          ...payload,
+        },
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+      },
+    });
+
+    return {
+      status: "transitioned",
+      fromState: from,
+      toState: input.to,
+      eventId: event.id,
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const existing = await tx.workerLifecycleEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (existing) {
+        const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+        return {
+          status: "duplicate",
+          fromState: existingPayload.from as WorkerState,
+          toState: existingPayload.to as WorkerState,
+          eventId: existing.id,
+        };
+      }
+    }
+    throw err;
+  }
 }

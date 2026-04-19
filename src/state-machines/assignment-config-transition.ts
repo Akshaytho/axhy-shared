@@ -22,6 +22,7 @@ import {
   MissingAssignmentConfigMetadataError,
 } from "./lifecycle-errors-v9";
 import { MissingIdempotencyKeyError } from "./visit-errors";
+import { isUniqueConstraintError } from "./concurrency";
 
 // ─── Actor ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,10 @@ export interface AssignmentDelegate {
     where: { id: string };
     data: Record<string, unknown>;
   }): Promise<AssignmentRow>;
+  updateMany(args: {
+    where: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }): Promise<{ count: number }>;
 }
 
 export interface AssignmentConfigEventDelegate {
@@ -149,33 +154,71 @@ export async function transitionAssignmentConfig(
   const payload = input.payload ?? {};
   validateAssignmentConfigMetadata(input.to, payload);
 
-  await tx.assignment.update({
-    where: { id: input.assignmentId },
+  // Sprint 10 hardening: concurrency-safe update
+  const updateResult = await tx.assignment.updateMany({
+    where: {
+      id: input.assignmentId,
+      lifecycleState: row.lifecycleState === null ? null : (from as unknown as string),
+    },
     data: { lifecycleState: input.to },
   });
 
-  const event = await tx.assignmentConfigEvent.create({
-    data: {
-      idempotencyKey: input.idempotencyKey,
-      assignmentId: input.assignmentId,
-      eventType: ASSIGNMENT_CONFIG_STATE_TRANSITION_EVENT_TYPE,
-      payload: {
-        from,
-        to: input.to,
-        reason: input.reason,
-        ...payload,
-      },
-      actorType: input.actor.type,
-      actorId: input.actor.id,
-    },
-  });
+  if (updateResult.count === 0) {
+    const current = await tx.assignment.findUnique({
+      where: { id: input.assignmentId },
+      select: { id: true, lifecycleState: true },
+    });
+    const newFrom = (current?.lifecycleState ?? AssignmentConfigState.DRAFT) as AssignmentConfigState;
+    if (newFrom === input.to) {
+      return { status: "no-op", fromState: newFrom, toState: input.to, eventId: "" };
+    }
+    throw new AssignmentConfigInvalidTransitionError(
+      newFrom,
+      input.to,
+      ASSIGNMENT_CONFIG_TRANSITIONS[newFrom] ?? [],
+    );
+  }
 
-  return {
-    status: "transitioned",
-    fromState: from,
-    toState: input.to,
-    eventId: event.id,
-  };
+  try {
+    const event = await tx.assignmentConfigEvent.create({
+      data: {
+        idempotencyKey: input.idempotencyKey,
+        assignmentId: input.assignmentId,
+        eventType: ASSIGNMENT_CONFIG_STATE_TRANSITION_EVENT_TYPE,
+        payload: {
+          from,
+          to: input.to,
+          reason: input.reason,
+          ...payload,
+        },
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+      },
+    });
+
+    return {
+      status: "transitioned",
+      fromState: from,
+      toState: input.to,
+      eventId: event.id,
+    };
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      const existing = await tx.assignmentConfigEvent.findUnique({
+        where: { idempotencyKey: input.idempotencyKey },
+      });
+      if (existing) {
+        const existingPayload = (existing.payload ?? {}) as Record<string, unknown>;
+        return {
+          status: "duplicate",
+          fromState: existingPayload.from as AssignmentConfigState,
+          toState: existingPayload.to as AssignmentConfigState,
+          eventId: existing.id,
+        };
+      }
+    }
+    throw err;
+  }
 }
 
 function validateAssignmentConfigMetadata(

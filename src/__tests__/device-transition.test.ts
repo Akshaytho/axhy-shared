@@ -53,6 +53,18 @@ function makeTx(initialRows: MockRow[] = []) {
         rows.set(where.id, updated);
         return updated;
       },
+      async updateMany({ where, data }) {
+        const id = where.id as string;
+        const fromGuard = where.deviceState as string | null | undefined;
+        const r = rows.get(id);
+        if (!r) return { count: 0 };
+        if (fromGuard !== undefined && r.deviceState !== fromGuard) {
+          return { count: 0 };
+        }
+        const updated = { ...r, ...(data as Partial<MockRow>) };
+        rows.set(id, updated);
+        return { count: 1 };
+      },
     },
     deviceLifecycleEvent: {
       async findUnique({ where }) {
