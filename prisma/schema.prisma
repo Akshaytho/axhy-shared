@@ -271,6 +271,14 @@ model Site {
   mustCompleteBefore String?
   requiredSkills     Json?
 
+  // Sprint 4: per-site check-in tolerance. Grace window is added to the
+  // visit's scheduled start when the no-show deadline job is scheduled —
+  // sites with tight building access may prefer 15, busier sites 45.
+  checkinGraceMinutes Int @default(30)
+  // Geofence radius in meters for check-in validation. 500 m matches the
+  // legacy constant in sites.service.ts; set lower for sensitive sites.
+  geofenceRadiusM     Int @default(500)
+
   assignments      Assignment[]
   siteVisits       SiteVisit[]
   swapRequestsFrom SwapRequest[] @relation("FromSite")
