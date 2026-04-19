@@ -15,8 +15,12 @@
 --   - Cheap to query per visit for the attention-queue derived view.
 --   - Retained for 90 days then swept; not critical audit data.
 
+-- id column has no DB-side default — Prisma's @default(uuid()) generates UUIDs
+-- on the client side, matching the convention across every existing model in
+-- this schema. Using gen_random_uuid() here would both drift from Prisma's
+-- expected shape and require pgcrypto on older Postgres versions.
 CREATE TABLE IF NOT EXISTS "SoftSignal" (
-  "id"              TEXT                     NOT NULL DEFAULT gen_random_uuid(),
+  "id"              TEXT                     NOT NULL,
   "visitId"         TEXT                     NOT NULL,
   "kind"            TEXT                     NOT NULL,
   "clientTimestamp" TIMESTAMP(3)             NOT NULL,
