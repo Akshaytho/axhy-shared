@@ -14,14 +14,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { VisitState, RejectionReason } from "../state-machines/visit";
+import { VisitState, RejectionReason, VisitActorType } from "../state-machines/visit";
 import { transitionVisit, buildEventType } from "../state-machines/visit-transition";
 import type {
   VisitTxClient,
   TransitionVisitInput,
 } from "../state-machines/visit-transition";
 import {
-  InvalidTransitionError,
+  VisitInvalidTransitionError,
   VisitNotFoundError,
   MissingRejectionMetadataError,
   MissingFraudCaseError,
@@ -126,7 +126,7 @@ function baseInput(
   return {
     visitId: "visit-1",
     to,
-    actor: { type: "SYSTEM", id: null },
+    actor: { type: VisitActorType.SYSTEM, id: null },
     reason: "test",
     idempotencyKey: `idem-${to}-${Math.random()}`,
     ...overrides,
@@ -262,7 +262,7 @@ test("rule A: transitions FROM pure terminals all throw", async () => {
       const { tx } = makeTx([seedVisit(terminal)]);
       await assert.rejects(
         () => transitionVisit(tx, baseInput(target)),
-        InvalidTransitionError,
+        VisitInvalidTransitionError,
         `pure terminal ${terminal} must not transition to ${target}`,
       );
     }
@@ -273,7 +273,7 @@ test("rule B: cannot rewind workflow (CHECKED_IN → NOTIFIED)", async () => {
   const { tx } = makeTx([seedVisit(VisitState.CHECKED_IN)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.NOTIFIED)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -281,7 +281,7 @@ test("rule B: cannot rewind workflow (IN_PROGRESS → CHECKED_IN)", async () => 
   const { tx } = makeTx([seedVisit(VisitState.IN_PROGRESS)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.CHECKED_IN)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -289,7 +289,7 @@ test("rule B: cannot rewind workflow (SUBMITTED → IN_PROGRESS)", async () => {
   const { tx } = makeTx([seedVisit(VisitState.SUBMITTED)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.IN_PROGRESS)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -297,7 +297,7 @@ test("rule C: cannot skip NOTIFIED (SCHEDULED → CHECKED_IN)", async () => {
   const { tx } = makeTx([seedVisit(VisitState.SCHEDULED)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.CHECKED_IN)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -305,7 +305,7 @@ test("rule C: cannot skip CHECKED_IN (NOTIFIED → IN_PROGRESS)", async () => {
   const { tx } = makeTx([seedVisit(VisitState.NOTIFIED)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.IN_PROGRESS)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -313,7 +313,7 @@ test("rule D: cannot change outcome (VERIFIED → PARTIAL)", async () => {
   const { tx } = makeTx([seedVisit(VisitState.VERIFIED)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.PARTIAL)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -321,7 +321,7 @@ test("rule D: cannot change outcome (PARTIAL → FLAGGED)", async () => {
   const { tx } = makeTx([seedVisit(VisitState.PARTIAL)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.FLAGGED)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -329,7 +329,7 @@ test("rule E: REPLACEMENT_REQUESTED cannot go directly to CHECKED_IN", async () 
   const { tx } = makeTx([seedVisit(VisitState.REPLACEMENT_REQUESTED)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.CHECKED_IN)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -337,7 +337,7 @@ test("rule F: POST_COMPLAINT_REVIEW cannot exit to arbitrary state (SCHEDULED)",
   const { tx } = makeTx([seedVisit(VisitState.POST_COMPLAINT_REVIEW)]);
   await assert.rejects(
     () => transitionVisit(tx, baseInput(VisitState.SCHEDULED)),
-    InvalidTransitionError,
+    VisitInvalidTransitionError,
   );
 });
 
@@ -564,7 +564,7 @@ test("event payload carries from, to, reason, restorationMode, and extras", asyn
   await transitionVisit(tx, {
     visitId: "visit-1",
     to: VisitState.CHECKED_IN,
-    actor: { type: "WORKER", id: "user-abc" },
+    actor: { type: VisitActorType.WORKER, id: "user-abc" },
     reason: "GPS within geofence",
     idempotencyKey: "key-1",
     payload: { gpsAccuracy: 12.3, deviceId: "dev-1" },

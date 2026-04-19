@@ -7,7 +7,7 @@
 
 import type { VisitState } from "./visit";
 
-export class InvalidTransitionError extends Error {
+export class VisitInvalidTransitionError extends Error {
   readonly code = "INVALID_TRANSITION";
   constructor(
     public readonly from: VisitState,
@@ -16,7 +16,7 @@ export class InvalidTransitionError extends Error {
   ) {
     const allowedText = allowed.length ? allowed.join(", ") : "(terminal)";
     super(`Invalid visit transition: ${from} → ${to}. Allowed from ${from}: ${allowedText}`);
-    this.name = "InvalidTransitionError";
+    this.name = "VisitInvalidTransitionError";
   }
 }
 

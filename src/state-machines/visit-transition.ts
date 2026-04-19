@@ -21,7 +21,7 @@
 
 import { VisitState, VISIT_TRANSITIONS, isRestorationTransition, RejectionReason } from "./visit";
 import {
-  InvalidTransitionError,
+  VisitInvalidTransitionError,
   VisitNotFoundError,
   MissingRejectionMetadataError,
   MissingFraudCaseError,
@@ -85,7 +85,8 @@ interface EventRow {
 // Input / result types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type VisitActorType = "WORKER" | "ADMIN" | "SUPERVISOR" | "SYSTEM" | "CLIENT";
+// VisitActorType is defined in ./visit.ts and re-exported via the barrel.
+import type { VisitActorType } from "./visit";
 
 export interface VisitActor {
   type: VisitActorType;
@@ -221,7 +222,7 @@ export async function transitionVisit(
   // 4. Validate transition against the locked map
   const allowed = VISIT_TRANSITIONS[from] ?? [];
   if (!allowed.includes(input.to)) {
-    throw new InvalidTransitionError(from, input.to, allowed);
+    throw new VisitInvalidTransitionError(from, input.to, allowed);
   }
 
   // 5. Mandatory metadata enforcement for REJECTED transitions (rule 3)
