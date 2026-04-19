@@ -9,6 +9,7 @@ export * from "./lifecycle-errors";
 export * from "./lifecycle-errors-v9";
 export * from "./assignment-config";
 export * from "./assignment-config-transition";
+export * from "./assignment-overlap";
 export * from "./worker";
 export * from "./worker-transition";
 export * from "./device";
