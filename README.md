@@ -1,17 +1,22 @@
 # @axhy/shared
 
-Shared state machines, types, and utilities for the Axhy platform.
+Shared state machines, Prisma schema, types, and utilities for the Axhy platform.
 
 Consumed by:
 - `axhy-admin` (Next.js 15 admin portal)
-- `axhy-v2-b2b` (Expo React Native worker app)
+- `axhy-v2-b2b/backend` (Fastify + Prisma server — runs migrations)
+- `axhy-v2-b2b/mobile` (Expo React Native worker app — state enums only)
 
 ## What lives here
 
-**14 state machines** — one file per entity under `src/state-machines/`:
+**14 state machines** (`src/state-machines/`) — one file per entity:
 Visit, AssignmentConfig, Worker, Device, Site, LeaveRequest, SwapRequest,
 Subscription, PhotoEvidence, PaymentEntry, Complaint, FraudCase, AdminUser,
 Company.
+
+**Prisma schema** (`prisma/schema.prisma`) — the authoritative database schema
+shared across admin + backend. Migrations live in `prisma/migrations/`.
+Backend applies migrations on deploy; admin only reads via `prisma generate`.
 
 **Types** (`src/types/`) — event payloads, API request/response contracts, domain DTOs.
 

@@ -1,6 +1,6 @@
 {
   "name": "@axhy/shared",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Shared state machines, types, and utilities for axhy-admin and axhy-v2-b2b",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -24,7 +24,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "prisma"
   ],
   "scripts": {
     "build": "tsc",

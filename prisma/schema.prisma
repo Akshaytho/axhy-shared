@@ -1,0 +1,642 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Admin-only models ──────────────────────────────────────────────────────
+
+enum AdminRole {
+  SUPER_ADMIN
+  COMPANY_ADMIN
+}
+
+model AdminUser {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String
+  name      String
+  role      AdminRole
+  companyId String?
+  // Restrict (not SET NULL) so deleting a Company can never orphan a
+  // COMPANY_ADMIN into a null-companyId row — which the JWT layer would
+  // treat as SUPER_ADMIN. SUPER_ADMINs are still fine: they already have
+  // companyId = null and aren't affected by any Company row deletion.
+  company   Company?  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  isActive  Boolean   @default(true)
+  lastLogin DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  auditLogs AdminAuditLog[]
+
+  @@index([email])
+  @@index([companyId])
+}
+
+// ─── Shared models (same DB as worker backend) ──────────────────────────────
+
+enum Role {
+  WORKER
+  SUPERVISOR
+  ADMIN
+}
+
+// Worker-side lifecycle: where in the journey the visit is.
+// Separate from the system's verification decision.
+// LOCKED v1.1 state machine — 18 canonical VisitState values (see @axhy/shared).
+// Legacy values ASSIGNED and CLOSED retained for existing-row compatibility and
+// are aliased in application code:
+//   ASSIGNED (legacy) → treated as SCHEDULED
+//   CLOSED   (legacy) → backfilled to COMPLETED_VERIFIED / *_APPROVED / *_WAIVED
+//                       based on the paired VerificationOutcome (sprint 6).
+// New rows MUST use the 18 canonical values, never ASSIGNED or CLOSED.
+enum LifecycleStatus {
+  ASSIGNED                     // legacy (pre-v1); reads as SCHEDULED
+  CHECKED_IN                   // canonical
+  IN_PROGRESS                  // canonical
+  SUBMITTED                    // canonical
+  CLOSED                       // legacy (pre-v1); backfilled in sprint 6
+  SCHEDULED                    // canonical v1
+  NOTIFIED                     // canonical v1
+  NO_SHOW_SUSPECTED            // canonical v1
+  REPLACEMENT_REQUESTED        // canonical v1
+  HANDOFF_REPLACED             // canonical v1 (terminal)
+  UNCOVERED                    // canonical v1 (terminal)
+  VERIFIED                     // canonical v1
+  PARTIAL                      // canonical v1
+  FLAGGED                      // canonical v1
+  COMPLETED_VERIFIED           // canonical v1 (terminal)
+  COMPLETED_PARTIAL_APPROVED   // canonical v1 (terminal)
+  COMPLETED_FLAGGED_WAIVED     // canonical v1 (terminal)
+  POST_COMPLAINT_REVIEW        // canonical v1
+  REJECTED                     // canonical v1 (terminal)
+  CANCELLED                    // canonical v1 (terminal)
+}
+
+// Structured rejection reason, captured on Assignment + AssignmentEvent when a
+// visit terminates via T-19 (FLAGGED → REJECTED) or T-26 (complaint upheld).
+enum RejectionReason {
+  FRAUD
+  QUALITY_UNACCEPTABLE
+  EVIDENCE_INSUFFICIENT
+  WRONG_SITE
+  CLIENT_COMPLAINT_UPHELD
+  POLICY_VIOLATION
+  INCOMPLETE_WORK
+  TIME_WINDOW_MISSED
+  OTHER
+}
+
+// System-side decision: what was decided about the work quality.
+// FLAGGED is NOT terminal (supervisor can move it to VERIFIED or REJECTED).
+enum VerificationOutcome {
+  PENDING         // not yet verified
+  VERIFIED        // passed (auto or supervisor approval)
+  PARTIAL         // partial credit (auto-accepted, no supervisor needed)
+  FLAGGED         // needs supervisor review (blocks lifecycle CLOSED)
+  REJECTED        // rejected (auto or supervisor)
+}
+
+// ─── Assignment system enums ─────────────────────────────────────────────────
+
+enum WorkerType {
+  ASSIGNED
+  FLOATER
+}
+
+enum SkillType {
+  ALL
+  GENERAL
+  MARBLE_POLISH
+  GLASS_CLEANING
+  WASHROOM
+  PARKING
+  GARDEN
+}
+
+enum SitePriority {
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum AssignmentSource {
+  MANUAL_PIN
+  AUTO_FILL
+  REPLACEMENT
+}
+
+enum AssignmentStatus {
+  ASSIGNED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  INCOMPLETE
+  REPLACED
+  CANCELLED
+}
+
+enum LeaveType {
+  SICK
+  FAMILY
+  EMERGENCY
+  TRANSPORT
+  OTHER
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AsnEventType {
+  CREATED
+  AUTO_FILLED
+  PINNED
+  ABSENCE_DETECTED
+  REPLACEMENT_SENT
+  REPLACEMENT_ACCEPTED
+  SUPERVISOR_OVERRIDE
+  COMPLETED
+  CANCELLED
+}
+
+enum SwapReason {
+  TOO_FAR
+  SITE_ISSUE
+  HEALTH
+  PERSONAL
+  OTHER
+}
+
+enum SwapStatus {
+  PENDING_APPROVAL
+  APPROVED
+  DENIED
+  RESOLVED
+  ESCALATED
+}
+
+enum SwapUrgency {
+  PLANNED
+  IMMEDIATE
+}
+
+// ─── Core models ─────────────────────────────────────────────────────────────
+
+model Company {
+  id               String   @id @default(uuid())
+  name             String
+  slug             String   @unique
+  plan             String   @default("trial")
+  registrationCode String?  @unique
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  users         User[]
+  sites         Site[]
+  assignments   Assignment[]
+  adminUsers    AdminUser[]
+  leaveRequests LeaveRequest[]
+  swapRequests  SwapRequest[]
+
+  @@index([slug])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  phone        String   @unique
+  name         String?
+  role         Role
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+  deviceId     String?
+  aadhaarHash  String?  @unique
+  faceVerified Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Assignment system fields
+  workerType     WorkerType?
+  maxSitesPerDay Int         @default(3)
+  homeLat        Float?
+  homeLng        Float?
+  skills         SkillType[]
+  groupId        String?
+
+  // Payroll: optional base monthly salary set by admin.
+  // If set, payroll = baseSalary + sum of per-visit earnings.
+  // If not set (null), payroll = only per-visit earnings.
+  baseSalaryPaise Int?
+
+  assignments      Assignment[]
+  siteVisits       SiteVisit[]
+  notifications    Notification[]
+  statusLogs       StatusLog[]
+  leaveRequests    LeaveRequest[]
+  swapRequests     SwapRequest[]
+  deletionRequests DeletionRequest[]
+
+  @@index([companyId])
+  @@index([phone])
+}
+
+model Site {
+  id           String   @id @default(uuid())
+  name         String
+  address      String
+  lat          Float
+  lng          Float
+  qrSecret     String?
+  contactName  String?
+  contactPhone String?
+  instructions String?
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Assignment system fields
+  requiredWorkers    Int          @default(1)
+  sitePriority       SitePriority @default(NORMAL)
+  mustCompleteBefore String?
+  requiredSkills     Json?
+
+  assignments      Assignment[]
+  siteVisits       SiteVisit[]
+  swapRequestsFrom SwapRequest[] @relation("FromSite")
+  swapRequestsPref SwapRequest[] @relation("PreferredSite")
+
+  @@index([companyId])
+}
+
+model Assignment {
+  id        String     @id @default(uuid())
+  siteId    String
+  site      Site       @relation(fields: [siteId], references: [id])
+  workerId  String
+  worker    User       @relation(fields: [workerId], references: [id])
+  companyId String
+  company   Company    @relation(fields: [companyId], references: [id])
+  timeStart String
+  timeEnd   String
+  days      Int[]
+  skipDates DateTime[]
+  startDate DateTime?
+  endDate   DateTime?
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Assignment system fields
+  date            DateTime?
+  source          AssignmentSource @default(MANUAL_PIN)
+  status          AssignmentStatus @default(ASSIGNED)
+  isPinned        Boolean          @default(false)
+  reasonLog       Json?
+  replacedByAsnId String?
+
+  // Structured rejection metadata (written on T-19 / T-26 visit transitions)
+  rejectionReason RejectionReason?
+  rejectionDetail String?
+
+  siteVisits SiteVisit[]
+  events     AssignmentEvent[]
+
+  @@index([workerId])
+  @@index([siteId])
+  @@index([companyId])
+  @@index([workerId, siteId])
+  @@index([date])
+  @@index([companyId, date])
+}
+
+model SiteVisit {
+  id                  String              @id @default(uuid())
+  assignmentId        String
+  assignment          Assignment          @relation(fields: [assignmentId], references: [id])
+  workerId            String
+  worker              User                @relation(fields: [workerId], references: [id])
+  siteId              String
+  site                Site                @relation(fields: [siteId], references: [id])
+  sessionId           String              @unique
+  // Split status: where in lifecycle + what verification decided
+  lifecycleStatus     LifecycleStatus     @default(ASSIGNED)
+  verificationOutcome VerificationOutcome @default(PENDING)
+  // Idempotency key: client-generated UUID for submit retry safety.
+  // Unique globally — same submission can only be processed once.
+  submissionId        String?             @unique
+  checkinAt           DateTime?
+  checkoutAt          DateTime?
+  checkinLat          Float?
+  checkinLng          Float?
+  qrVerified          Boolean             @default(false)
+  beforePhotoCount    Int                 @default(0)
+  afterPhotoCount     Int                 @default(0)
+  durationSeconds     Int                 @default(0)
+  aiScore             Int?                // combined 0-100 score (denormalized from snapshot)
+  aiReasoning         String?             // denormalized from snapshot for quick reads
+  aiModelVersion      String?
+  supervisorNotes     String?
+  earningsPaise       Int                 @default(0)
+  motionData          Json?               // Array of 30-second motion summaries (silent collection)
+  stepCount           Int?                // Hardware step counter delta for the session
+  motionMeta          Json?               // Phone model, Hz level, kill history
+
+  // Deadline scheduling (BullMQ-driven). When a state has a time-bounded next
+  // event (NOTIFIED → NO_SHOW_SUSPECTED, REPLACEMENT_REQUESTED → UNCOVERED),
+  // the job id + scheduled time is mirrored here so backup-sweep can detect
+  // missed-timer situations and recover.
+  nextDeadlineAt      DateTime?
+  nextDeadlineJobId   String?
+  nextDeadlineKind    String?
+
+  // Complaint-review preservation (T-20..T-25). Once a visit has passed
+  // through POST_COMPLAINT_REVIEW — regardless of dismissal or upholding —
+  // this flag stays true for the life of the row. Enables clean queries like
+  // "completed visits that were later reviewed" without inspecting state.
+  postComplaintReviewed Boolean  @default(false)
+  postComplaintOutcome  String?  // 'DISMISSED' | 'UPHELD' | null
+
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  photos               Photo[]
+  gpsTrail             GpsTrailPoint[]
+  statusLogs           StatusLog[]
+  verificationSnapshot VerificationSnapshot?
+
+  @@index([workerId])
+  @@index([siteId])
+  @@index([assignmentId])
+  @@index([sessionId])
+  @@index([workerId, createdAt])
+  @@index([lifecycleStatus, verificationOutcome])
+  @@index([assignmentId, createdAt])
+  @@index([nextDeadlineAt])
+}
+
+model Photo {
+  id         String    @id @default(uuid())
+  visitId    String
+  visit      SiteVisit @relation(fields: [visitId], references: [id])
+  sessionId  String
+  type       String    // "before" | "after"
+  r2Key      String
+  hash       String?
+  gpsLat     Float?
+  gpsLng     Float?
+  capturedAt DateTime
+  width      Int?
+  height     Int?
+  sizeBytes  Int?
+  createdAt  DateTime  @default(now())
+
+  // Idempotency: same visit can't have two photos with the same R2 key.
+  // Enables skipDuplicates on retried submits.
+  @@unique([visitId, r2Key])
+  @@index([visitId])
+  @@index([sessionId])
+  @@index([hash])
+}
+
+model GpsTrailPoint {
+  id         String    @id @default(uuid())
+  visitId    String
+  visit      SiteVisit @relation(fields: [visitId], references: [id])
+  lat        Float
+  lng        Float
+  accuracy   Float?
+  altitude   Float?
+  speed      Float?
+  recordedAt DateTime
+  createdAt  DateTime  @default(now())
+
+  // Idempotency: each trail point is unique per (visit, timestamp, coords).
+  // Retried submits with the same trail are silently skipped.
+  @@unique([visitId, recordedAt, lat, lng])
+  @@index([visitId])
+  @@index([visitId, recordedAt])
+}
+
+// Audit trail. Each row logs either a lifecycle transition, an outcome
+// transition, or both. Written ONLY via transitionVisit() helper — never
+// directly. Guarantees every status change is traceable.
+//
+// changedBy is nullable: system-driven transitions (AI verification) have
+// no human actor. Use changedByLabel to record the system component name.
+model StatusLog {
+  id              String               @id @default(uuid())
+  visitId         String
+  visit           SiteVisit            @relation(fields: [visitId], references: [id])
+  fromLifecycle   LifecycleStatus?
+  toLifecycle     LifecycleStatus?
+  fromOutcome     VerificationOutcome?
+  toOutcome       VerificationOutcome?
+  changedBy       String?
+  user            User?                @relation(fields: [changedBy], references: [id])
+  changedByLabel  String?              // human-readable: "worker", "supervisor", "system:verifier"
+  reason          String?
+  createdAt       DateTime             @default(now())
+
+  @@index([visitId])
+  @@index([changedBy])
+  @@index([visitId, createdAt])
+}
+
+// Immutable frozen-in-time record of every AI verification decision.
+// Written exactly once per visit (unique on visitId). Never updated.
+// If we need to "re-verify", create a new snapshot with a different version marker.
+model VerificationSnapshot {
+  id                 String              @id @default(uuid())
+  visitId            String              @unique
+  visit              SiteVisit           @relation(fields: [visitId], references: [id])
+  ruleScore          Int                 // normalized 0-100
+  ruleBreakdown      Json                // full rule engine breakdown
+  aiScore            Float               // raw 0-1 from AI
+  aiLabel            String              // EXCELLENT/GOOD/UNCERTAIN/POOR
+  aiReasoning        String
+  aiFraudProbability Float
+  aiModelVersion     String
+  combinedScore      Int                 // final 0-100 (40% rule + 60% AI)
+  finalOutcome       VerificationOutcome
+  inputSnapshot      Json                // frozen inputs used to compute score
+  createdAt          DateTime            @default(now())
+
+  @@index([finalOutcome])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  title     String
+  body      String
+  type      String
+  data      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
+
+// ─── New assignment system models ─────────────────────────────────────────────
+
+model LeaveRequest {
+  id        String      @id @default(uuid())
+  workerId  String
+  worker    User        @relation(fields: [workerId], references: [id])
+  companyId String
+  company   Company     @relation(fields: [companyId], references: [id])
+  date      DateTime
+  type      LeaveType
+  status    LeaveStatus @default(PENDING)
+  note      String?
+  createdAt DateTime    @default(now())
+
+  @@index([workerId])
+  @@index([companyId])
+  @@index([date])
+  @@index([workerId, date])
+}
+
+model SwapRequest {
+  id              String      @id @default(uuid())
+  workerId        String
+  worker          User        @relation(fields: [workerId], references: [id])
+  companyId       String
+  company         Company     @relation(fields: [companyId], references: [id])
+  fromSiteId      String
+  fromSite        Site        @relation("FromSite", fields: [fromSiteId], references: [id])
+  preferredSiteId String?
+  preferredSite   Site?       @relation("PreferredSite", fields: [preferredSiteId], references: [id])
+  date            DateTime
+  reason          SwapReason
+  note            String?
+  urgency         SwapUrgency @default(PLANNED)
+  status          SwapStatus  @default(PENDING_APPROVAL)
+  approvedBy      String?
+  approvalNote    String?
+  resolvedByAgent Boolean     @default(false)
+  resolution      Json?
+  createdAt       DateTime    @default(now())
+
+  @@index([workerId])
+  @@index([companyId])
+  @@index([fromSiteId])
+  @@index([date])
+  @@index([status])
+}
+
+model AssignmentEvent {
+  id             String       @id @default(uuid())
+  assignmentId   String
+  assignment     Assignment   @relation(fields: [assignmentId], references: [id])
+  eventType      AsnEventType
+  payload        Json?
+  actorType      String
+  actorId        String?
+  // Deterministic key that collapses duplicate replays of the same logical
+  // action (worker retry, BullMQ reattempt, admin double-click). Built via
+  // @axhy/shared buildIdempotencyKey(). Nullable for legacy rows.
+  idempotencyKey String?      @unique
+  createdAt      DateTime     @default(now())
+
+  @@index([assignmentId])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+model AgentRun {
+  id         String    @id @default(uuid())
+  companyId  String
+  agentName  String // "night-planner" | "morning-coverage" | "progress-monitor" | "day-close"
+  targetDate DateTime // the operational date the agent is acting on
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  status     String // "running" | "success" | "failed" | "skipped"
+  error      String?
+  summary    String?
+  metrics    Json?
+  toolCalls  Int       @default(0)
+
+  @@unique([companyId, agentName, targetDate])
+  @@index([companyId, agentName])
+  @@index([status])
+  @@index([startedAt])
+}
+
+// ─── Admin-portal tables (managed here, used by eclean-admin repo) ─────────
+// These tables are used only by the admin portal but live in the shared DB.
+// Keeping them in this schema prevents `db push` from dropping them.
+
+model ContactSubmission {
+  id           String   @id @default(uuid())
+  name         String
+  company      String?
+  email        String
+  phone        String?
+  workerCount  String?
+  message      String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([email])
+}
+
+// ─── Account deletion requests ───────────────────────────────────────────────
+
+model DeletionRequest {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  reason      String?
+  status      String    @default("PENDING")  // PENDING | PROCESSED | REJECTED
+  requestedAt DateTime  @default(now())
+  processedAt DateTime?
+  processedBy String?   // AdminUser id who processed it
+
+  @@index([userId])
+  @@index([status])
+}
+
+// ─── Hard-delete audit log ───────────────────────────────────────────────────
+
+enum AuditAction {
+  HARD_DELETE_WORKER
+  HARD_DELETE_SITE
+  HARD_DELETE_ASSIGNMENT
+  SAFE_DELETE_WORKER
+  SAFE_DELETE_SITE
+  SAFE_DELETE_ASSIGNMENT
+  GDPR_ANONYMIZE_WORKER
+  GDPR_ANONYMIZE_SITE
+}
+
+model AdminAuditLog {
+  id          String      @id @default(uuid())
+  adminUserId String
+  adminUser   AdminUser   @relation(fields: [adminUserId], references: [id], onDelete: Restrict)
+  action      AuditAction
+  targetId    String
+  snapshot    Json
+  reason      String
+  createdAt   DateTime    @default(now())
+
+  @@index([adminUserId])
+  @@index([action])
+  @@index([targetId])
+  @@index([createdAt])
+}
