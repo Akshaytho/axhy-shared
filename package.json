@@ -20,6 +20,18 @@
     "./utils/*": {
       "types": "./dist/utils/*.d.ts",
       "default": "./dist/utils/*.js"
+    },
+    "./ai": {
+      "types": "./dist/ai/index.d.ts",
+      "default": "./dist/ai/index.js"
+    },
+    "./ai/tools": {
+      "types": "./dist/ai/tools.d.ts",
+      "default": "./dist/ai/tools.js"
+    },
+    "./ai/prompt": {
+      "types": "./dist/ai/prompt.d.ts",
+      "default": "./dist/ai/prompt.js"
     }
   },
   "files": [
@@ -35,6 +47,7 @@
     "prepare": "tsc"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
     "@types/node": "^22.19.17",
     "typescript": "^5.6.0"
   },
