@@ -618,6 +618,94 @@ test("restoration to a different completion state is rejected", async () => {
   );
 });
 
+test("restoration without originalCompletionState in payload succeeds (hint is optional)", async () => {
+  // Callers that don't pass originalCompletionState / priorCompletionState
+  // should still be able to restore — the transition map already validates
+  // POST_COMPLAINT_REVIEW → COMPLETED_* paths.
+  const v = seedVisit(VisitState.POST_COMPLAINT_REVIEW);
+  v.postComplaintReviewed = true;
+  const { tx, visits, eventsByIdempotency } = makeTx([v]);
+  const result = await transitionVisit(
+    tx,
+    baseInput(VisitState.COMPLETED_VERIFIED, {
+      idempotencyKey: "restore-no-hint",
+      payload: { complaintId: "complaint-1", outcome: "DISMISSED" },
+    }),
+  );
+  assert.equal(result.status, "transitioned");
+  assert.equal(result.isRestoration, true);
+  assert.equal(visits.get("visit-1")!.postComplaintOutcome, "DISMISSED");
+  assert.equal(visits.get("visit-1")!.postComplaintReviewed, true);
+  const event = eventsByIdempotency.get("restore-no-hint");
+  assert.ok(event, "event written");
+  assert.equal(
+    (event!.payload as Record<string, unknown>).restorationMode,
+    true,
+    "event payload carries restorationMode=true",
+  );
+});
+
+test("REJECTED+FRAUD: MissingFraudCaseError thrown even when tx.assignment is absent", async () => {
+  // tx mocks without an assignment delegate must still get enforcement errors
+  // thrown before transitionVisit ever tries to call assignment.update.
+  const { tx } = makeTx([seedVisit(VisitState.FLAGGED)]);
+  // Remove the optional assignment delegate to simulate a lean mock
+  const leanTx = { siteVisit: tx.siteVisit, assignmentEvent: tx.assignmentEvent };
+  await assert.rejects(
+    () =>
+      transitionVisit(
+        leanTx,
+        baseInput(VisitState.REJECTED, {
+          payload: {
+            rejectionReason: RejectionReason.FRAUD,
+            rejectionDetail: "pHash match",
+            // fraudCaseId intentionally missing
+          },
+        }),
+      ),
+    MissingFraudCaseError,
+  );
+});
+
+test("REJECTED+CLIENT_COMPLAINT_UPHELD: MissingComplaintIdError thrown when tx.assignment absent", async () => {
+  const { tx } = makeTx([seedVisit(VisitState.POST_COMPLAINT_REVIEW)]);
+  const leanTx = { siteVisit: tx.siteVisit, assignmentEvent: tx.assignmentEvent };
+  await assert.rejects(
+    () =>
+      transitionVisit(
+        leanTx,
+        baseInput(VisitState.REJECTED, {
+          payload: {
+            rejectionReason: RejectionReason.CLIENT_COMPLAINT_UPHELD,
+            rejectionDetail: "evidence confirmed",
+            // complaintId intentionally missing
+          },
+        }),
+      ),
+    MissingComplaintIdError,
+  );
+});
+
+test("REJECTED+FRAUD succeeds and skips assignment.update when tx.assignment absent", async () => {
+  // Callers without assignment delegate (e.g. lean test mocks) must still be
+  // able to complete the state transition — assignment de-normalisation is a
+  // nice-to-have, not a hard requirement at the state-machine layer.
+  const { tx, visits } = makeTx([seedVisit(VisitState.FLAGGED)]);
+  const leanTx = { siteVisit: tx.siteVisit, assignmentEvent: tx.assignmentEvent };
+  const result = await transitionVisit(
+    leanTx,
+    baseInput(VisitState.REJECTED, {
+      payload: {
+        rejectionReason: RejectionReason.FRAUD,
+        rejectionDetail: "pHash duplicate detected",
+        fraudCaseId: "fraud-99",
+      },
+    }),
+  );
+  assert.equal(result.status, "transitioned");
+  assert.equal(visits.get("visit-1")!.lifecycleStatus, VisitState.REJECTED);
+});
+
 test("T-26 upheld → REJECTED marks postComplaintOutcome=UPHELD", async () => {
   const v = seedVisit(VisitState.POST_COMPLAINT_REVIEW);
   v.postComplaintReviewed = true;

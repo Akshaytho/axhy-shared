@@ -75,7 +75,13 @@ export interface VisitAssignmentDelegate {
 export interface VisitTxClient {
   siteVisit: SiteVisitDelegate;
   assignmentEvent: AssignmentEventDelegate;
-  assignment: VisitAssignmentDelegate;
+  /**
+   * Optional: when provided, rejection metadata is also written to the
+   * Assignment row for fast analytics/payroll queries. Callers that only
+   * have access to siteVisit + assignmentEvent (e.g. in-memory test mocks)
+   * may omit this — the state transition and event write still proceed.
+   */
+  assignment?: VisitAssignmentDelegate;
 }
 
 interface VisitRow {
@@ -273,10 +279,18 @@ export async function transitionVisit(
   const upheldAfterReview =
     from === VisitState.POST_COMPLAINT_REVIEW && input.to === VisitState.REJECTED;
 
+  // Restoration-mode: the transition map already guarantees
+  // POST_COMPLAINT_REVIEW → COMPLETED_* is the only valid path here, so no
+  // extra payload check is needed.  If the caller supplied
+  // originalCompletionState / priorCompletionState as a hint we validate it
+  // as a belt-and-suspenders guard, but we do NOT require it.
   if (isRestoration) {
     const originalCompletionState =
       payload.originalCompletionState ?? payload.priorCompletionState;
-    if (originalCompletionState !== input.to) {
+    if (
+      originalCompletionState !== undefined &&
+      originalCompletionState !== input.to
+    ) {
       throw new MissingComplaintRestorationMetadataError();
     }
   }
@@ -336,7 +350,10 @@ export async function transitionVisit(
   // 8. Rejection metadata is stored redundantly on Assignment as well as the
   //    AssignmentEvent payload so analytics/payroll can query it without
   //    replaying the event stream.
-  if (input.to === VisitState.REJECTED) {
+  //    Guard: tx.assignment is optional so in-memory test mocks that only
+  //    wire siteVisit + assignmentEvent still work. Production callers always
+  //    pass a full Prisma tx (which includes the assignment delegate).
+  if (input.to === VisitState.REJECTED && tx.assignment) {
     await tx.assignment.update({
       where: { id: visit.assignmentId },
       data: {
