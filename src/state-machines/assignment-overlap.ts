@@ -76,6 +76,7 @@ export interface AssignmentOverlapQueryClient {
         days: number[];
         timeStart: string;
         timeEnd: string;
+        oneOffDates?: Date[];
       }>
     >;
   };
@@ -86,6 +87,12 @@ export interface AssignmentOverlapInput {
   days: readonly number[];
   timeStart: string;
   timeEnd: string;
+  /**
+   * One-off dates for ONE_OFF source assignments. When provided, the overlap
+   * check unions these dates with the weekday expansion of days[] to detect
+   * conflicts against both recurring and other one-off assignments.
+   */
+  oneOffDates?: Date[];
   /** When updating an existing assignment, exclude it from the self-overlap check. */
   excludeAssignmentId?: string;
 }
@@ -116,12 +123,51 @@ export class AssignmentOverlapError extends Error {
   }
 }
 
+// ─── One-off date helpers ─────────────────────────────────────────────────────
+
+/**
+ * Returns the ISO YYYY-MM-DD string for a Date, using its UTC components.
+ * We store one-off dates as midnight UTC (no time component matters for
+ * calendar-day comparison), so UTC day extraction is correct.
+ */
+function isoDateString(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Given a recurring assignment with a days[] pattern, check whether any of
+ * the supplied one-off dates falls on one of those weekdays.
+ * Uses UTC weekday (0=Sun..6=Sat) — callers store oneOffDates as UTC midnight.
+ */
+function oneOffDatesIntersectDays(oneOffDates: Date[], days: readonly number[]): boolean {
+  if (oneOffDates.length === 0 || days.length === 0) return false;
+  const daySet = new Set(days);
+  return oneOffDates.some((d) => daySet.has(d.getUTCDay()));
+}
+
+/**
+ * Check if two arrays of one-off dates share at least one calendar day.
+ * Comparison uses ISO YYYY-MM-DD strings to avoid time-zone drift.
+ */
+function oneOffDatesIntersect(aDates: Date[], bDates: Date[]): boolean {
+  if (aDates.length === 0 || bDates.length === 0) return false;
+  const aSet = new Set(aDates.map(isoDateString));
+  return bDates.some((d) => aSet.has(isoDateString(d)));
+}
+
 /**
  * Throws AssignmentOverlapError if any existing non-terminal assignment
  * for the given worker overlaps by both day AND time. Legacy rows with
  * null lifecycleState also count — pre-backfill ACTIVE rows still reserve
  * time, so we include them by querying `lifecycleState: null` alongside
  * the reserved states. Backfill → remove null branch.
+ *
+ * Extended in Sprint 4 to handle ONE_OFF assignments:
+ *   - If the new assignment has oneOffDates, compare those dates against
+ *     each existing assignment's days[] (weekday expansion) AND oneOffDates.
+ *   - If an existing assignment has oneOffDates, compare those against
+ *     the new assignment's days[] weekday expansion AND its oneOffDates.
+ *   - Time overlap check always runs when date overlap is detected.
  *
  * Typically called inside the same tx as the assignment create/update so
  * a concurrent insert can't slip past the read-check.
@@ -141,17 +187,40 @@ export async function assertNoAssignmentOverlap(
         { lifecycleState: null, isActive: true },
       ],
     },
-    select: { id: true, siteId: true, days: true, timeStart: true, timeEnd: true },
+    select: { id: true, siteId: true, days: true, timeStart: true, timeEnd: true, oneOffDates: true },
   });
 
-  const candidate = {
-    days: input.days,
-    timeStart: input.timeStart,
-    timeEnd: input.timeEnd,
-  };
+  const inputOneOffDates = input.oneOffDates ?? [];
+  const inputDays = input.days;
+  const inputWindow = { timeStart: input.timeStart, timeEnd: input.timeEnd };
 
   for (const e of existing) {
-    if (hasDayOverlap(e, candidate) && hasTimeOverlap(e, candidate)) {
+    const existingOneOffDates = e.oneOffDates ?? [];
+
+    // Determine whether the date sets overlap (either direction):
+    //   1. new recurring vs existing recurring: hasDayOverlap
+    //   2. new one-off vs existing recurring: check if any new date falls on existing weekday
+    //   3. new recurring vs existing one-off: check if any existing date falls on new weekday
+    //   4. new one-off vs existing one-off: shared calendar date
+    let datesOverlap = false;
+
+    const existingWindow = { timeStart: e.timeStart, timeEnd: e.timeEnd };
+
+    if (inputOneOffDates.length > 0 && existingOneOffDates.length > 0) {
+      // Both are one-off: check shared calendar dates
+      datesOverlap = oneOffDatesIntersect(inputOneOffDates, existingOneOffDates);
+    } else if (inputOneOffDates.length > 0 && e.days.length > 0) {
+      // New is one-off, existing is recurring: does any new date fall on existing weekday?
+      datesOverlap = oneOffDatesIntersectDays(inputOneOffDates, e.days);
+    } else if (inputDays.length > 0 && existingOneOffDates.length > 0) {
+      // New is recurring, existing is one-off: does any existing date fall on new weekday?
+      datesOverlap = oneOffDatesIntersectDays(existingOneOffDates, inputDays);
+    } else {
+      // Both use days[]: standard weekday intersection
+      datesOverlap = hasDayOverlap(e, { days: inputDays });
+    }
+
+    if (datesOverlap && hasTimeOverlap(existingWindow, inputWindow)) {
       throw new AssignmentOverlapError(input.workerId, e.id, e.siteId);
     }
   }

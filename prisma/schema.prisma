@@ -135,6 +135,7 @@ enum AssignmentSource {
   MANUAL_PIN
   AUTO_FILL
   REPLACEMENT
+  ONE_OFF
 }
 
 enum AssignmentStatus {
@@ -448,6 +449,11 @@ model Assignment {
   // Structured rejection metadata (written on T-19 / T-26 visit transitions)
   rejectionReason RejectionReason?
   rejectionDetail String?
+
+  // Sprint 4: one-off dates for assignments with source=ONE_OFF.
+  // When non-empty, the planner generates visits on these exact dates instead
+  // of using the days[] recurrence pattern. days[] stays empty on ONE_OFF rows.
+  oneOffDates DateTime[] @default([])
 
   // Sprint 9: AssignmentConfig lifecycle state machine. Tracks the recurring
   // slot's lifecycle (separate from the per-visit lifecycleStatus on
