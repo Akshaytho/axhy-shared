@@ -125,6 +125,12 @@ enum SitePriority {
   LOW
 }
 
+enum NoWorkDayScope {
+  COMPANY
+  SITE
+  WORKERS
+}
+
 enum AssignmentSource {
   MANUAL_PIN
   AUTO_FILL
@@ -294,6 +300,7 @@ model Company {
   adminUsers    AdminUser[]
   leaveRequests LeaveRequest[]
   swapRequests  SwapRequest[]
+  noWorkDays    NoWorkDay[]
 
   @@index([slug])
 }
@@ -389,9 +396,27 @@ model Site {
   swapRequestsFrom SwapRequest[] @relation("FromSite")
   swapRequestsPref SwapRequest[] @relation("PreferredSite")
   lifecycleEvents  SiteLifecycleEvent[]
+  noWorkDays       NoWorkDay[]
 
   @@index([companyId])
   @@index([lifecycleState])
+}
+
+model NoWorkDay {
+  id        String         @id @default(uuid())
+  companyId String
+  company   Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  date      DateTime       @db.Date
+  scope     NoWorkDayScope
+  siteId    String?
+  site      Site?          @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  workerIds String[]       @default([])
+  name      String
+  createdBy String
+  createdAt DateTime       @default(now())
+
+  @@unique([companyId, date, scope, siteId])
+  @@index([companyId, date])
 }
 
 model Assignment {
