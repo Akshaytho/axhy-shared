@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pre-commit-trufflehog — scan staged diff for verified secrets before committing
+# Installation (run once per developer):
+#   cp scripts/pre-commit-trufflehog .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+if ! command -v trufflehog &>/dev/null; then
+  echo "[pre-commit] WARNING: trufflehog not installed — secret scan skipped."
+  echo "[pre-commit] Install with: brew install trufflehog"
+  exit 0
+fi
+
+echo "[pre-commit] Running TruffleHog secret scan on staged changes..."
+
+# Scan only the diff about to be committed (staged vs HEAD)
+git diff --cached --name-only | xargs -I{} trufflehog filesystem {} --only-verified --no-update --fail 2>/dev/null
+
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+  echo ""
+  echo "[pre-commit] BLOCKED: TruffleHog found a verified secret in staged files."
+  echo "[pre-commit] Remove the secret, rotate it, and re-stage before committing."
+  exit 1
+fi
+
+echo "[pre-commit] No secrets found. Proceeding."
+exit 0

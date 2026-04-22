@@ -1,0 +1,33 @@
+name: Snyk Dependency Scan
+
+# NOTE: Add SNYK_TOKEN to GitHub repo Settings → Secrets and variables → Actions.
+# Get your token at https://app.snyk.io/account — free tier allows 200 tests/month.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  snyk:
+    name: Snyk vulnerability scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --fail-on=upgradable
