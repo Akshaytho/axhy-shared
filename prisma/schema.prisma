@@ -29,6 +29,13 @@ model AdminUser {
   company   Company?  @relation(fields: [companyId], references: [id], onDelete: Restrict)
   isActive  Boolean   @default(true)
   lastLogin DateTime?
+  // Security P1.9: JWT revocation watermark. Any token with `iat`
+  // (issued-at) older than this value is rejected in getSession(). Set to
+  // now() on logout, password reset, or any out-of-band compromise event
+  // so ALL of an admin's devices are logged out atomically. Without this,
+  // a stolen JWT remains valid until its 7-day expiry even after the
+  // admin clicks logout.
+  sessionsRevokedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 

@@ -1,6 +1,6 @@
 {
   "name": "@axhy/shared",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "Shared state machines, types, and utilities for axhy-admin and axhy-v2-b2b",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
