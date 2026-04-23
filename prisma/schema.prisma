@@ -302,13 +302,14 @@ model Company {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  users         User[]
-  sites         Site[]
-  assignments   Assignment[]
-  adminUsers    AdminUser[]
-  leaveRequests LeaveRequest[]
-  swapRequests  SwapRequest[]
-  noWorkDays    NoWorkDay[]
+  users              User[]
+  sites              Site[]
+  assignments        Assignment[]
+  adminUsers         AdminUser[]
+  leaveRequests      LeaveRequest[]
+  swapRequests       SwapRequest[]
+  noWorkDays         NoWorkDay[]
+  weeklyStaffingPlans WeeklyStaffingPlan[]
 
   @@index([slug])
 }
@@ -399,12 +400,13 @@ model Site {
   // authoritative active-or-not signal migrates to SITE_ACTIVE_STATES check.
   lifecycleState SiteState?
 
-  assignments      Assignment[]
-  siteVisits       SiteVisit[]
-  swapRequestsFrom SwapRequest[] @relation("FromSite")
-  swapRequestsPref SwapRequest[] @relation("PreferredSite")
-  lifecycleEvents  SiteLifecycleEvent[]
-  noWorkDays       NoWorkDay[]
+  assignments          Assignment[]
+  siteVisits           SiteVisit[]
+  swapRequestsFrom     SwapRequest[] @relation("FromSite")
+  swapRequestsPref     SwapRequest[] @relation("PreferredSite")
+  lifecycleEvents      SiteLifecycleEvent[]
+  noWorkDays           NoWorkDay[]
+  weeklyStaffingPlans  WeeklyStaffingPlan[]
 
   @@index([companyId])
   @@index([lifecycleState])
@@ -883,6 +885,29 @@ model DeletionRequest {
 
   @@index([userId])
   @@index([status])
+}
+
+// ─── Weekly staffing plan ─────────────────────────────────────────────────────
+// Per-site per-date planned worker count. The night planner checks this table
+// first and falls back to site.requiredWorkers if no entry exists.
+// Rows for today and past dates are immutable via API (server rejects writes
+// with HTTP 400). Only future dates (date > istToday()) are writable.
+
+model WeeklyStaffingPlan {
+  id             String    @id @default(uuid())
+  companyId      String
+  company        Company   @relation(fields: [companyId], references: [id])
+  siteId         String
+  site           Site      @relation(fields: [siteId], references: [id])
+  date           DateTime
+  workersPlanned Int
+  confirmedBy    String?   // AdminUser id who confirmed
+  confirmedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([siteId, date])
+  @@index([companyId, date])
 }
 
 // ─── Hard-delete audit log ───────────────────────────────────────────────────
