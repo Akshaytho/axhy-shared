@@ -16,19 +16,19 @@ enum AdminRole {
 }
 
 model AdminUser {
-  id        String    @id @default(uuid())
-  email     String    @unique
-  password  String
-  name      String
-  role      AdminRole
-  companyId String?
+  id                String    @id @default(uuid())
+  email             String    @unique
+  password          String
+  name              String
+  role              AdminRole
+  companyId         String?
   // Restrict (not SET NULL) so deleting a Company can never orphan a
   // COMPANY_ADMIN into a null-companyId row — which the JWT layer would
   // treat as SUPER_ADMIN. SUPER_ADMINs are still fine: they already have
   // companyId = null and aren't affected by any Company row deletion.
-  company   Company?  @relation(fields: [companyId], references: [id], onDelete: Restrict)
-  isActive  Boolean   @default(true)
-  lastLogin DateTime?
+  company           Company?  @relation(fields: [companyId], references: [id], onDelete: Restrict)
+  isActive          Boolean   @default(true)
+  lastLogin         DateTime?
   // Security P1.9: JWT revocation watermark. Any token with `iat`
   // (issued-at) older than this value is rejected in getSession(). Set to
   // now() on logout, password reset, or any out-of-band compromise event
@@ -36,8 +36,8 @@ model AdminUser {
   // a stolen JWT remains valid until its 7-day expiry even after the
   // admin clicks logout.
   sessionsRevokedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   auditLogs AdminAuditLog[]
 
@@ -63,26 +63,26 @@ enum Role {
 //                       based on the paired VerificationOutcome (sprint 6).
 // New rows MUST use the 18 canonical values, never ASSIGNED or CLOSED.
 enum LifecycleStatus {
-  ASSIGNED                     // legacy (pre-v1); reads as SCHEDULED
-  CHECKED_IN                   // canonical
-  IN_PROGRESS                  // canonical
-  SUBMITTED                    // canonical
-  CLOSED                       // legacy (pre-v1); backfilled in sprint 6
-  SCHEDULED                    // canonical v1
-  NOTIFIED                     // canonical v1
-  NO_SHOW_SUSPECTED            // canonical v1
-  REPLACEMENT_REQUESTED        // canonical v1
-  HANDOFF_REPLACED             // canonical v1 (terminal)
-  UNCOVERED                    // canonical v1 (terminal)
-  VERIFIED                     // canonical v1
-  PARTIAL                      // canonical v1
-  FLAGGED                      // canonical v1
-  COMPLETED_VERIFIED           // canonical v1 (terminal)
-  COMPLETED_PARTIAL_APPROVED   // canonical v1 (terminal)
-  COMPLETED_FLAGGED_WAIVED     // canonical v1 (terminal)
-  POST_COMPLAINT_REVIEW        // canonical v1
-  REJECTED                     // canonical v1 (terminal)
-  CANCELLED                    // canonical v1 (terminal)
+  ASSIGNED // legacy (pre-v1); reads as SCHEDULED
+  CHECKED_IN // canonical
+  IN_PROGRESS // canonical
+  SUBMITTED // canonical
+  CLOSED // legacy (pre-v1); backfilled in sprint 6
+  SCHEDULED // canonical v1
+  NOTIFIED // canonical v1
+  NO_SHOW_SUSPECTED // canonical v1
+  REPLACEMENT_REQUESTED // canonical v1
+  HANDOFF_REPLACED // canonical v1 (terminal)
+  UNCOVERED // canonical v1 (terminal)
+  VERIFIED // canonical v1
+  PARTIAL // canonical v1
+  FLAGGED // canonical v1
+  COMPLETED_VERIFIED // canonical v1 (terminal)
+  COMPLETED_PARTIAL_APPROVED // canonical v1 (terminal)
+  COMPLETED_FLAGGED_WAIVED // canonical v1 (terminal)
+  POST_COMPLAINT_REVIEW // canonical v1
+  REJECTED // canonical v1 (terminal)
+  CANCELLED // canonical v1 (terminal)
 }
 
 // Structured rejection reason, captured on Assignment + AssignmentEvent when a
@@ -102,11 +102,11 @@ enum RejectionReason {
 // System-side decision: what was decided about the work quality.
 // FLAGGED is NOT terminal (supervisor can move it to VERIFIED or REJECTED).
 enum VerificationOutcome {
-  PENDING         // not yet verified
-  VERIFIED        // passed (auto or supervisor approval)
-  PARTIAL         // partial credit (auto-accepted, no supervisor needed)
-  FLAGGED         // needs supervisor review (blocks lifecycle CLOSED)
-  REJECTED        // rejected (auto or supervisor)
+  PENDING // not yet verified
+  VERIFIED // passed (auto or supervisor approval)
+  PARTIAL // partial credit (auto-accepted, no supervisor needed)
+  FLAGGED // needs supervisor review (blocks lifecycle CLOSED)
+  REJECTED // rejected (auto or supervisor)
 }
 
 // ─── Assignment system enums ─────────────────────────────────────────────────
@@ -302,13 +302,13 @@ model Company {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  users              User[]
-  sites              Site[]
-  assignments        Assignment[]
-  adminUsers         AdminUser[]
-  leaveRequests      LeaveRequest[]
-  swapRequests       SwapRequest[]
-  noWorkDays         NoWorkDay[]
+  users               User[]
+  sites               Site[]
+  assignments         Assignment[]
+  adminUsers          AdminUser[]
+  leaveRequests       LeaveRequest[]
+  swapRequests        SwapRequest[]
+  noWorkDays          NoWorkDay[]
   weeklyStaffingPlans WeeklyStaffingPlan[]
 
   @@index([slug])
@@ -349,15 +349,15 @@ model User {
   lifecycleState WorkerState?
   deviceState    DeviceState?
 
-  assignments            Assignment[]
-  siteVisits             SiteVisit[]
-  notifications          Notification[]
-  statusLogs             StatusLog[]
-  leaveRequests          LeaveRequest[]
-  swapRequests           SwapRequest[]
-  deletionRequests       DeletionRequest[]
-  workerLifecycleEvents  WorkerLifecycleEvent[]
-  deviceLifecycleEvents  DeviceLifecycleEvent[]
+  assignments           Assignment[]
+  siteVisits            SiteVisit[]
+  notifications         Notification[]
+  statusLogs            StatusLog[]
+  leaveRequests         LeaveRequest[]
+  swapRequests          SwapRequest[]
+  deletionRequests      DeletionRequest[]
+  workerLifecycleEvents WorkerLifecycleEvent[]
+  deviceLifecycleEvents DeviceLifecycleEvent[]
 
   @@index([companyId])
   @@index([phone])
@@ -400,13 +400,23 @@ model Site {
   // authoritative active-or-not signal migrates to SITE_ACTIVE_STATES check.
   lifecycleState SiteState?
 
-  assignments          Assignment[]
-  siteVisits           SiteVisit[]
-  swapRequestsFrom     SwapRequest[] @relation("FromSite")
-  swapRequestsPref     SwapRequest[] @relation("PreferredSite")
-  lifecycleEvents      SiteLifecycleEvent[]
-  noWorkDays           NoWorkDay[]
-  weeklyStaffingPlans  WeeklyStaffingPlan[]
+  // Contract window (v1.12). Both dates optional — admins typically enter
+  // `contractStartDate` at onboarding and may leave `contractEndDate` null
+  // for open-ended contracts. Used by /assignments for "contract ending
+  // soon" surfacing and by RENEWAL_WINDOW state transitions to carry the
+  // queryable end date instead of hiding it in SiteLifecycleEvent.payload.
+  // This column alone doesn't drive auto-deactivation — admins still flip
+  // the site inactive manually via the existing DELETE or PUT path.
+  contractStartDate DateTime? @db.Date
+  contractEndDate   DateTime? @db.Date
+
+  assignments         Assignment[]
+  siteVisits          SiteVisit[]
+  swapRequestsFrom    SwapRequest[]        @relation("FromSite")
+  swapRequestsPref    SwapRequest[]        @relation("PreferredSite")
+  lifecycleEvents     SiteLifecycleEvent[]
+  noWorkDays          NoWorkDay[]
+  weeklyStaffingPlans WeeklyStaffingPlan[]
 
   @@index([companyId])
   @@index([lifecycleState])
@@ -506,32 +516,32 @@ model SiteVisit {
   beforePhotoCount    Int                 @default(0)
   afterPhotoCount     Int                 @default(0)
   durationSeconds     Int                 @default(0)
-  aiScore             Int?                // combined 0-100 score (denormalized from snapshot)
-  aiReasoning         String?             // denormalized from snapshot for quick reads
+  aiScore             Int? // combined 0-100 score (denormalized from snapshot)
+  aiReasoning         String? // denormalized from snapshot for quick reads
   aiModelVersion      String?
   supervisorNotes     String?
   earningsPaise       Int                 @default(0)
-  motionData          Json?               // Array of 30-second motion summaries (silent collection)
-  stepCount           Int?                // Hardware step counter delta for the session
-  motionMeta          Json?               // Phone model, Hz level, kill history
+  motionData          Json? // Array of 30-second motion summaries (silent collection)
+  stepCount           Int? // Hardware step counter delta for the session
+  motionMeta          Json? // Phone model, Hz level, kill history
 
   // Deadline scheduling (BullMQ-driven). When a state has a time-bounded next
   // event (NOTIFIED → NO_SHOW_SUSPECTED, REPLACEMENT_REQUESTED → UNCOVERED),
   // the job id + scheduled time is mirrored here so backup-sweep can detect
   // missed-timer situations and recover.
-  nextDeadlineAt      DateTime?
-  nextDeadlineJobId   String?
-  nextDeadlineKind    String?
+  nextDeadlineAt    DateTime?
+  nextDeadlineJobId String?
+  nextDeadlineKind  String?
 
   // Complaint-review preservation (T-20..T-25). Once a visit has passed
   // through POST_COMPLAINT_REVIEW — regardless of dismissal or upholding —
   // this flag stays true for the life of the row. Enables clean queries like
   // "completed visits that were later reviewed" without inspecting state.
-  postComplaintReviewed Boolean  @default(false)
-  postComplaintOutcome  String?  // 'DISMISSED' | 'UPHELD' | null
+  postComplaintReviewed Boolean @default(false)
+  postComplaintOutcome  String? // 'DISMISSED' | 'UPHELD' | null
 
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   photos               Photo[]
   gpsTrail             GpsTrailPoint[]
@@ -554,7 +564,7 @@ model Photo {
   visitId    String
   visit      SiteVisit @relation(fields: [visitId], references: [id])
   sessionId  String
-  type       String    // "before" | "after"
+  type       String // "before" | "after"
   r2Key      String
   hash       String?
   gpsLat     Float?
@@ -599,18 +609,18 @@ model GpsTrailPoint {
 // changedBy is nullable: system-driven transitions (AI verification) have
 // no human actor. Use changedByLabel to record the system component name.
 model StatusLog {
-  id              String               @id @default(uuid())
-  visitId         String
-  visit           SiteVisit            @relation(fields: [visitId], references: [id])
-  fromLifecycle   LifecycleStatus?
-  toLifecycle     LifecycleStatus?
-  fromOutcome     VerificationOutcome?
-  toOutcome       VerificationOutcome?
-  changedBy       String?
-  user            User?                @relation(fields: [changedBy], references: [id])
-  changedByLabel  String?              // human-readable: "worker", "supervisor", "system:verifier"
-  reason          String?
-  createdAt       DateTime             @default(now())
+  id             String               @id @default(uuid())
+  visitId        String
+  visit          SiteVisit            @relation(fields: [visitId], references: [id])
+  fromLifecycle  LifecycleStatus?
+  toLifecycle    LifecycleStatus?
+  fromOutcome    VerificationOutcome?
+  toOutcome      VerificationOutcome?
+  changedBy      String?
+  user           User?                @relation(fields: [changedBy], references: [id])
+  changedByLabel String? // human-readable: "worker", "supervisor", "system:verifier"
+  reason         String?
+  createdAt      DateTime             @default(now())
 
   @@index([visitId])
   @@index([changedBy])
@@ -624,16 +634,16 @@ model VerificationSnapshot {
   id                 String              @id @default(uuid())
   visitId            String              @unique
   visit              SiteVisit           @relation(fields: [visitId], references: [id])
-  ruleScore          Int                 // normalized 0-100
-  ruleBreakdown      Json                // full rule engine breakdown
-  aiScore            Float               // raw 0-1 from AI
-  aiLabel            String              // EXCELLENT/GOOD/UNCERTAIN/POOR
+  ruleScore          Int // normalized 0-100
+  ruleBreakdown      Json // full rule engine breakdown
+  aiScore            Float // raw 0-1 from AI
+  aiLabel            String // EXCELLENT/GOOD/UNCERTAIN/POOR
   aiReasoning        String
   aiFraudProbability Float
   aiModelVersion     String
-  combinedScore      Int                 // final 0-100 (40% rule + 60% AI)
+  combinedScore      Int // final 0-100 (40% rule + 60% AI)
   finalOutcome       VerificationOutcome
-  inputSnapshot      Json                // frozen inputs used to compute score
+  inputSnapshot      Json // frozen inputs used to compute score
   createdAt          DateTime            @default(now())
 
   @@index([finalOutcome])
@@ -858,14 +868,14 @@ model AgentRun {
 // Keeping them in this schema prevents `db push` from dropping them.
 
 model ContactSubmission {
-  id           String   @id @default(uuid())
-  name         String
-  company      String?
-  email        String
-  phone        String?
-  workerCount  String?
-  message      String?
-  createdAt    DateTime @default(now())
+  id          String   @id @default(uuid())
+  name        String
+  company     String?
+  email       String
+  phone       String?
+  workerCount String?
+  message     String?
+  createdAt   DateTime @default(now())
 
   @@index([createdAt])
   @@index([email])
@@ -878,10 +888,10 @@ model DeletionRequest {
   userId      String
   user        User      @relation(fields: [userId], references: [id])
   reason      String?
-  status      String    @default("PENDING")  // PENDING | PROCESSED | REJECTED
+  status      String    @default("PENDING") // PENDING | PROCESSED | REJECTED
   requestedAt DateTime  @default(now())
   processedAt DateTime?
-  processedBy String?   // AdminUser id who processed it
+  processedBy String? // AdminUser id who processed it
 
   @@index([userId])
   @@index([status])
@@ -901,7 +911,7 @@ model WeeklyStaffingPlan {
   site           Site      @relation(fields: [siteId], references: [id])
   date           DateTime
   workersPlanned Int
-  confirmedBy    String?   // AdminUser id who confirmed
+  confirmedBy    String? // AdminUser id who confirmed
   confirmedAt    DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
